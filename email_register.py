@@ -51,12 +51,24 @@ TEMP_MAIL_ADMIN_EMAIL = str(
     or _conf.get("cloud_mail_admin_email")
     or ""
 )
-TEMP_MAIL_DOMAIN = str(
+_raw_mail_domain = (
     _conf.get("temp_mail_domain")
     or _conf.get("cloud_mail_domain")
     or _conf.get("duckmail_domain")
     or ""
 )
+# 支持单个字符串或域名列表，统一存为列表
+if isinstance(_raw_mail_domain, list):
+    TEMP_MAIL_DOMAINS: List[str] = [str(d).strip() for d in _raw_mail_domain if str(d).strip()]
+else:
+    TEMP_MAIL_DOMAINS: List[str] = [str(_raw_mail_domain).strip()] if str(_raw_mail_domain).strip() else []
+
+def _pick_mail_domain() -> str:
+    """从域名列表中随机选取一个，使用 secrets 保证多进程间不重复。"""
+    if not TEMP_MAIL_DOMAINS:
+        raise Exception("temp_mail_domain 未设置，无法创建邮箱")
+    import secrets
+    return TEMP_MAIL_DOMAINS[secrets.randbelow(len(TEMP_MAIL_DOMAINS))]
 TEMP_MAIL_SITE_PASSWORD = str(_conf.get("temp_mail_site_password", ""))
 TEMP_MAIL_ROLE_NAME = str(_conf.get("temp_mail_role_name") or _conf.get("cloud_mail_role_name") or "")
 PROXY = str(_conf.get("proxy", ""))
@@ -311,7 +323,7 @@ def _cloudmail_add_user_request(session, use_cffi, token: str, email: str, passw
 def _create_cloudmail_email() -> Tuple[str, str, str]:
     if not TEMP_MAIL_API_BASE:
         raise Exception("temp_mail_api_base 未设置，无法创建 Cloud Mail 邮箱")
-    if not TEMP_MAIL_DOMAIN:
+    if not TEMP_MAIL_DOMAINS:
         raise Exception("temp_mail_domain 未设置，无法创建 Cloud Mail 邮箱")
 
     session, use_cffi = _create_session()
@@ -319,7 +331,7 @@ def _create_cloudmail_email() -> Tuple[str, str, str]:
 
     for _ in range(5):
         email_local = _generate_local_part(random.randint(8, 12))
-        email = f"{email_local}@{TEMP_MAIL_DOMAIN}"
+        email = f"{email_local}@{_pick_mail_domain()}"
         password = _generate_mail_password()
 
         for force_refresh in (False, True):
@@ -379,8 +391,8 @@ def _extract_duckmail_domain_name(item: Dict[str, Any]) -> str:
 
 
 def _resolve_duckmail_domain(session, use_cffi, api_base: str) -> str:
-    if TEMP_MAIL_DOMAIN:
-        return TEMP_MAIL_DOMAIN
+    if TEMP_MAIL_DOMAINS:
+        return _pick_mail_domain()
 
     headers = _build_duckmail_headers(TEMP_MAIL_ADMIN_PASSWORD)
     res = _do_request(
@@ -500,7 +512,7 @@ def create_temp_email() -> Tuple[str, str, str]:
 
     if not TEMP_MAIL_ADMIN_PASSWORD:
         raise Exception("temp_mail_admin_password 未设置，无法创建临时邮箱")
-    if not TEMP_MAIL_DOMAIN:
+    if not TEMP_MAIL_DOMAINS:
         raise Exception("temp_mail_domain 未设置，无法创建临时邮箱")
 
     api_base = TEMP_MAIL_API_BASE.rstrip("/")
@@ -516,7 +528,7 @@ def create_temp_email() -> Tuple[str, str, str]:
             f"{api_base}/admin/new_address",
             json={
                 "name": email_local,
-                "domain": TEMP_MAIL_DOMAIN,
+                "domain": _pick_mail_domain(),
                 "enablePrefix": False,
             },
             headers=headers,

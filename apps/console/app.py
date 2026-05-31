@@ -490,15 +490,21 @@ def merged_defaults() -> dict[str, Any]:
     if saved.get("browser_proxy") is not None:
         base["browser_proxy"] = str(saved.get("browser_proxy", ""))
     for key in (
-        "temp_mail_provider",
-        "temp_mail_api_base",
-        "temp_mail_admin_email",
-        "temp_mail_admin_password",
-        "temp_mail_domain",
-        "temp_mail_site_password",
+            "temp_mail_provider",
+            "temp_mail_api_base",
+            "temp_mail_admin_email",
+            "temp_mail_admin_password",
+            "temp_mail_site_password",
     ):
         if key in saved:
             base[key] = str(saved.get(key, ""))
+    # temp_mail_domain 支持数组（多域名随机选取），不做 str() 转换
+    if "temp_mail_domain" in saved:
+        saved_domain = saved.get("temp_mail_domain")
+        if isinstance(saved_domain, str) and saved_domain.strip():
+            base["temp_mail_domain"] = saved_domain.strip()
+        elif isinstance(saved_domain, list):
+            base["temp_mail_domain"] = saved_domain
     api_base = dict(base.get("api") or {})
     if "api_endpoint" in saved:
         api_base["endpoint"] = str(saved.get("api_endpoint", ""))
@@ -521,7 +527,7 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "temp_mail_api_base": defaults.get("temp_mail_api_base", "") if payload.temp_mail_api_base is None else payload.temp_mail_api_base.strip(),
         "temp_mail_admin_email": defaults.get("temp_mail_admin_email", "") if payload.temp_mail_admin_email is None else payload.temp_mail_admin_email.strip(),
         "temp_mail_admin_password": defaults.get("temp_mail_admin_password", "") if payload.temp_mail_admin_password is None else payload.temp_mail_admin_password.strip(),
-        "temp_mail_domain": defaults.get("temp_mail_domain", "") if payload.temp_mail_domain is None else payload.temp_mail_domain.strip(),
+        "temp_mail_domain": defaults.get("temp_mail_domain", "") if payload.temp_mail_domain is None else payload.temp_mail_domain,
         "temp_mail_site_password": defaults.get("temp_mail_site_password", "") if payload.temp_mail_site_password is None else payload.temp_mail_site_password.strip(),
         "api": {
             "endpoint": api_defaults.get("endpoint", "") if payload.api_endpoint is None else payload.api_endpoint.strip(),
