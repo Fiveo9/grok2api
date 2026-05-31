@@ -31,9 +31,9 @@ services:
     restart: unless-stopped
 
   # 如果出口 IP 不干净，可取消以下注释使用 Warp 作为落地代理
-  # 启用后将 proxy.base_proxy_url 设为 socks5://warp:1080
-  # warp:
-  #   container_name: warp
+  # 启用后将 proxy.base_proxy_url 设为 socks5://warp-proxy:1080
+  # warp-proxy:
+  #   container_name: warp-proxy
   #   image: caomingjun/warp:latest
   #   restart: unless-stopped
   #   ports:

@@ -43,8 +43,6 @@ RUN wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor 
 WORKDIR /workspace
 
 COPY requirements.txt /tmp/requirements.txt
-COPY apps/console/requirements.txt /tmp/console-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/console-requirements.txt
 
 CMD ["bash"]

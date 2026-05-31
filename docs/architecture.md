@@ -4,18 +4,24 @@
 
 ## 模块
 
-### 1. console
+### 1. built-in register console
 
-位置：[apps/console](../apps/console)
+位置：
+
+- [app/products/web/admin/register.py](../app/products/web/admin/register.py)
+- [app/statics/admin/register.html](../app/statics/admin/register.html)
+- [app/statics/js/admin-register.js](../app/statics/js/admin-register.js)
 
 职责：
 
-- Web 控制台
+- `/admin/register` Web 控制台
 - 系统默认配置管理
 - 新建任务
 - 任务状态轮询
 - 实时日志查看
 - 停止和删除任务
+
+任务数据默认写入 `${DATA_DIR}/register/tasks`，控制台数据库写入 `${DATA_DIR}/register/console.db`。
 
 ### 2. register-runner
 
@@ -44,7 +50,7 @@
 - 为浏览器和邮箱 API 提供出口
 - 在业务开始前确认网络出口可用
 
-当前一体化部署里，它由根目录 [docker-compose.register.yml](../docker-compose.register.yml) 中的 `warp` 服务提供。
+当前一体化部署里，它由根目录 [docker-compose.register.yml](../docker-compose.register.yml) 中的 `warp-proxy` 服务提供。
 同时配合 `privoxy` 和 `flaresolverr` 组成防封链路。
 
 ### 4. token-sink
@@ -72,16 +78,16 @@
 
 - WARP 不和注册脚本写死耦合
 - sink 不直接侵入注册逻辑
-- console 只做编排和观测，不直接篡改现有生产任务目录
+- 内置注册控制台只做编排和观测，不直接篡改现有生产任务目录
 - 每个任务都复制到自己的运行目录里执行，避免互相污染
 
 ## 当前闭环
 
 当前仓库已经能完成下面的完整链路：
 
-1. `warp + privoxy + flaresolverr` 提供默认防封网络出口
-2. `console` 创建任务并写入任务级 `config.json`
+1. `warp-proxy + privoxy + flaresolverr` 提供默认防封网络出口
+2. `/admin/register` 创建任务并写入任务级 `config.json`
 3. `register-runner` 独立执行注册流程
 4. 成功后将 `sso` 追加写入本地文件
 5. 同时把 `sso` 推送到内置 `grok2api` 防封版后台
-6. `console` 持续从日志解析实时状态并展示
+6. `/admin/register` 持续从日志解析实时状态并展示

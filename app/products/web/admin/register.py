@@ -8,8 +8,7 @@ import signal
 import sqlite3
 import subprocess
 import threading
-import time
-from contextlib import asynccontextmanager
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,25 +16,20 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi import Request
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.platform.paths import data_path
 
-APP_DIR = Path(__file__).resolve().parent
-REPO_ROOT = APP_DIR.parents[1]
-RUNTIME_DIR = APP_DIR / "runtime"
-TASKS_DIR = RUNTIME_DIR / "tasks"
-DB_PATH = RUNTIME_DIR / "console.db"
-TEMPLATES = Jinja2Templates(directory=str(APP_DIR / "templates"))
 
+REGISTER_ROOT = data_path("register")
+TASKS_DIR = REGISTER_ROOT / "tasks"
+DB_PATH = REGISTER_ROOT / "console.db"
+REPO_ROOT = Path(__file__).resolve().parents[4]
 SOURCE_PROJECT = Path(os.getenv("GROK_REGISTER_SOURCE_DIR", str(REPO_ROOT))).resolve()
-SOURCE_VENV_PYTHON = Path(
-    os.getenv("GROK_REGISTER_PYTHON", str(SOURCE_PROJECT / ".venv" / "bin" / "python"))
-).expanduser()
+_DEFAULT_PYTHON = SOURCE_PROJECT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+SOURCE_VENV_PYTHON = Path(os.getenv("GROK_REGISTER_PYTHON", str(_DEFAULT_PYTHON))).expanduser()
+SOURCE_PYTHON = SOURCE_VENV_PYTHON
 MAX_CONCURRENT_TASKS = max(1, int(os.getenv("GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS", "1")))
 SUPERVISOR_INTERVAL = max(1.0, float(os.getenv("GROK_REGISTER_CONSOLE_POLL_INTERVAL", "2")))
 
@@ -50,14 +44,45 @@ STATUS_PARTIAL = "partial"
 STATUS_FAILED = "failed"
 STATUS_STOPPED = "stopped"
 
-LINE_RE_ROUND = re.compile(r"开始第\s*(\d+)\s*轮注册")
-LINE_RE_SUCCESS = re.compile(r"注册成功\s*\|\s*email=([^|\s]+)")
-LINE_RE_ERROR = re.compile(r"\[Error\]\s*第\s*(\d+)\s*轮失败:\s*(.+)")
-LINE_RE_TEMP_EMAIL = re.compile(r"临时邮箱创建成功:\s*([^\s]+)")
-LINE_RE_FILLED_EMAIL = re.compile(r"已填写邮箱并点击注册:\s*([^\s]+)")
-LINE_RE_PUSH = re.compile(r"SSO token 已推送到 API")
-
 db_lock = threading.RLock()
+
+
+class TaskCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    count: int = Field(50, ge=1, le=5000)
+    proxy: str | None = None
+    browser_proxy: str | None = None
+    temp_mail_provider: str | None = None
+    temp_mail_api_base: str | None = None
+    temp_mail_admin_email: str | None = None
+    temp_mail_admin_password: str | None = None
+    temp_mail_domain: str | None = None
+    temp_mail_site_password: str | None = None
+    api_endpoint: str | None = None
+    api_token: str | None = None
+    api_append: bool | None = None
+    notes: str = ""
+
+
+class SystemSettings(BaseModel):
+    proxy: str = ""
+    browser_proxy: str = ""
+    temp_mail_provider: str = ""
+    temp_mail_api_base: str = ""
+    temp_mail_admin_email: str = ""
+    temp_mail_admin_password: str = ""
+    temp_mail_domain: str = ""
+    temp_mail_site_password: str = ""
+    api_endpoint: str = ""
+    api_token: str = ""
+    api_append: bool = True
+
+
+@dataclass
+class ManagedProcess:
+    task_id: int
+    process: subprocess.Popen[Any]
+    log_handle: Any
 
 
 def now_iso() -> str:
@@ -65,7 +90,7 @@ def now_iso() -> str:
 
 
 def ensure_dirs() -> None:
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    REGISTER_ROOT.mkdir(parents=True, exist_ok=True)
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -76,31 +101,31 @@ def get_conn() -> sqlite3.Connection:
 
 
 def fetch_all(query: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
-    with db_lock, get_conn() as conn:
+    with db_lock, closing(get_conn()) as conn:
         return conn.execute(query, params).fetchall()
 
 
 def fetch_one(query: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
-    with db_lock, get_conn() as conn:
+    with db_lock, closing(get_conn()) as conn:
         return conn.execute(query, params).fetchone()
 
 
 def execute(query: str, params: tuple[Any, ...] = ()) -> int:
-    with db_lock, get_conn() as conn:
+    with db_lock, closing(get_conn()) as conn:
         cur = conn.execute(query, params)
         conn.commit()
         return int(cur.lastrowid)
 
 
 def execute_no_return(query: str, params: tuple[Any, ...] = ()) -> None:
-    with db_lock, get_conn() as conn:
+    with db_lock, closing(get_conn()) as conn:
         conn.execute(query, params)
         conn.commit()
 
 
 def init_db() -> None:
     ensure_dirs()
-    with db_lock, get_conn() as conn:
+    with db_lock, closing(get_conn()) as conn:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS settings (
@@ -180,11 +205,10 @@ def load_source_defaults() -> dict[str, Any]:
             base[key] = value
 
     api_base = dict(base.get("api") or {})
-    api_env_map = {
+    for key, env_name in {
         "endpoint": "GROK_REGISTER_DEFAULT_API_ENDPOINT",
         "token": "GROK_REGISTER_DEFAULT_API_TOKEN",
-    }
-    for key, env_name in api_env_map.items():
+    }.items():
         value = os.getenv(env_name)
         if value is not None:
             api_base[key] = value
@@ -193,269 +217,6 @@ def load_source_defaults() -> dict[str, Any]:
         api_base["append"] = append_env.strip().lower() in {"1", "true", "yes", "on"}
     base["api"] = api_base
     return base
-
-
-def _mask_proxy(proxy_url: str) -> str:
-    parsed = urlparse(proxy_url)
-    if not parsed.scheme or not parsed.netloc:
-        return proxy_url
-    host = parsed.hostname or ""
-    port = f":{parsed.port}" if parsed.port else ""
-    return f"{parsed.scheme}://{host}{port}"
-
-
-def _request_with_optional_proxy(
-    url: str,
-    proxy_url: str = "",
-    method: str = "GET",
-    timeout: int = 15,
-    headers: dict[str, str] | None = None,
-) -> requests.Response:
-    proxies = None
-    if proxy_url:
-        proxies = {"http": proxy_url, "https": proxy_url}
-    return requests.request(
-        method,
-        url,
-        timeout=timeout,
-        headers=headers,
-        proxies=proxies,
-        allow_redirects=True,
-    )
-
-
-def _build_health_item(
-    key: str,
-    label: str,
-    ok: bool,
-    summary: str,
-    detail: str,
-    target: str,
-) -> dict[str, Any]:
-    return {
-        "key": key,
-        "label": label,
-        "ok": ok,
-        "summary": summary,
-        "detail": detail,
-        "target": target,
-        "checked_at": now_iso(),
-    }
-
-
-def run_health_checks() -> dict[str, Any]:
-    defaults = merged_defaults()
-    items: list[dict[str, Any]] = []
-
-    browser_proxy = str(defaults.get("browser_proxy", "") or "").strip()
-    request_proxy = str(defaults.get("proxy", "") or "").strip()
-    api_conf = dict(defaults.get("api") or {})
-    api_endpoint = str(api_conf.get("endpoint", "") or "").strip()
-    temp_mail_api_base = str(defaults.get("temp_mail_api_base", "") or "").strip()
-
-    warp_target = browser_proxy or request_proxy
-    if not warp_target:
-        items.append(
-            _build_health_item(
-                "warp",
-                "WARP / Proxy",
-                False,
-                "未配置代理出口",
-                "当前系统默认配置里没有 `browser_proxy` 或 `proxy`，无法检查前置网络出口。",
-                "-",
-            )
-        )
-    else:
-        try:
-            response = _request_with_optional_proxy(
-                "https://www.cloudflare.com/cdn-cgi/trace",
-                proxy_url=warp_target,
-                timeout=20,
-            )
-            body = response.text
-            ip_match = re.search(r"(?m)^ip=(.+)$", body)
-            loc_match = re.search(r"(?m)^loc=(.+)$", body)
-            warp_match = re.search(r"(?m)^warp=(.+)$", body)
-            ip = ip_match.group(1).strip() if ip_match else "unknown"
-            loc = loc_match.group(1).strip() if loc_match else "unknown"
-            warp_state = warp_match.group(1).strip() if warp_match else "unknown"
-            ok = response.status_code == 200
-            items.append(
-                _build_health_item(
-                    "warp",
-                    "WARP / Proxy",
-                    ok,
-                    f"HTTP {response.status_code} | IP {ip} | LOC {loc}",
-                    f"通过代理 `{_mask_proxy(warp_target)}` 访问 Cloudflare trace 成功，warp={warp_state}。",
-                    _mask_proxy(warp_target),
-                )
-            )
-        except Exception as exc:
-            items.append(
-                _build_health_item(
-                    "warp",
-                    "WARP / Proxy",
-                    False,
-                    "代理出口不可达",
-                    f"通过 `{_mask_proxy(warp_target)}` 访问 Cloudflare trace 失败：{exc}",
-                    _mask_proxy(warp_target),
-                )
-            )
-
-    if not api_endpoint:
-        items.append(
-            _build_health_item(
-                "grok2api",
-                "grok2api Admin Sink",
-                False,
-                "未配置 token sink",
-                "当前系统默认配置里没有 `api.endpoint`，注册成功后不会自动入池。",
-                "-",
-            )
-        )
-    else:
-        try:
-            response = _request_with_optional_proxy(api_endpoint, timeout=15)
-            ok = response.status_code in {200, 401, 403, 405}
-            items.append(
-                _build_health_item(
-                    "grok2api",
-                    "grok2api Admin Sink",
-                    ok,
-                    f"HTTP {response.status_code}",
-                    "防封版管理接口已可达。即使返回 401/403，也说明服务本身在线，只是需要正确的管理口令。",
-                    api_endpoint,
-                )
-            )
-        except Exception as exc:
-            items.append(
-                _build_health_item(
-                    "grok2api",
-                    "grok2api Admin Sink",
-                    False,
-                    "接口不可达",
-                    f"访问 `{api_endpoint}` 失败：{exc}",
-                    api_endpoint,
-                )
-            )
-
-    if not temp_mail_api_base:
-        items.append(
-            _build_health_item(
-                "temp_mail",
-                "Temp Mail API",
-                False,
-                "未配置临时邮箱 API",
-                "当前系统默认配置里没有 `temp_mail_api_base`，注册流程会在创建邮箱阶段直接失败。",
-                "-",
-            )
-        )
-    else:
-        try:
-            response = _request_with_optional_proxy(
-                temp_mail_api_base,
-                proxy_url=request_proxy,
-                timeout=15,
-            )
-            ok = response.status_code < 500
-            items.append(
-                _build_health_item(
-                    "temp_mail",
-                    "Temp Mail API",
-                    ok,
-                    f"HTTP {response.status_code}",
-                    "接口地址可达。这里只做基础连通性检查，不会真的创建邮箱地址。",
-                    temp_mail_api_base,
-                )
-            )
-        except Exception as exc:
-            items.append(
-                _build_health_item(
-                    "temp_mail",
-                    "Temp Mail API",
-                    False,
-                    "接口不可达",
-                    f"访问 `{temp_mail_api_base}` 失败：{exc}",
-                    temp_mail_api_base,
-                )
-            )
-
-    xai_proxy = browser_proxy or request_proxy
-    try:
-        response = _request_with_optional_proxy(
-            "https://accounts.x.ai/sign-up?redirect=grok-com",
-            proxy_url=xai_proxy,
-            timeout=20,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        ok = response.status_code in {200, 301, 302, 303, 307, 308}
-        detail = f"使用 `{_mask_proxy(xai_proxy)}` 访问注册页返回 HTTP {response.status_code}。" if xai_proxy else f"直连访问注册页返回 HTTP {response.status_code}。"
-        if not ok and response.status_code in {401, 403, 429}:
-            detail += " 这通常说明当前出口被目标站点拦截、限流，或还没完成可用的人机验证链路。"
-        items.append(
-            _build_health_item(
-                "xai",
-                "x.ai Sign-up",
-                ok,
-                f"HTTP {response.status_code}",
-                detail,
-                "https://accounts.x.ai/sign-up?redirect=grok-com",
-            )
-        )
-    except Exception as exc:
-        items.append(
-            _build_health_item(
-                "xai",
-                "x.ai Sign-up",
-                False,
-                "注册页不可达",
-                f"访问 `x.ai` 注册页失败：{exc}",
-                "https://accounts.x.ai/sign-up?redirect=grok-com",
-            )
-        )
-
-    return {
-        "items": items,
-        "checked_at": now_iso(),
-    }
-
-
-class TaskCreate(BaseModel):
-    name: str = Field(..., min_length=1, max_length=120)
-    count: int = Field(50, ge=1, le=5000)
-    proxy: str | None = None
-    browser_proxy: str | None = None
-    temp_mail_provider: str | None = None
-    temp_mail_api_base: str | None = None
-    temp_mail_admin_email: str | None = None
-    temp_mail_admin_password: str | None = None
-    temp_mail_domain: str | None = None
-    temp_mail_site_password: str | None = None
-    api_endpoint: str | None = None
-    api_token: str | None = None
-    api_append: bool | None = None
-    notes: str = ""
-
-
-class SystemSettings(BaseModel):
-    proxy: str = ""
-    browser_proxy: str = ""
-    temp_mail_provider: str = ""
-    temp_mail_api_base: str = ""
-    temp_mail_admin_email: str = ""
-    temp_mail_admin_password: str = ""
-    temp_mail_domain: str = ""
-    temp_mail_site_password: str = ""
-    api_endpoint: str = ""
-    api_token: str = ""
-    api_append: bool = True
-
-
-@dataclass
-class ManagedProcess:
-    task_id: int
-    process: subprocess.Popen[Any]
-    log_handle: Any
 
 
 def read_settings() -> dict[str, Any]:
@@ -485,26 +246,24 @@ def write_settings(settings: SystemSettings) -> dict[str, Any]:
 def merged_defaults() -> dict[str, Any]:
     base = load_source_defaults()
     saved = read_settings()
-    if saved.get("proxy") is not None:
-        base["proxy"] = str(saved.get("proxy", ""))
-    if saved.get("browser_proxy") is not None:
-        base["browser_proxy"] = str(saved.get("browser_proxy", ""))
     for key in (
-            "temp_mail_provider",
-            "temp_mail_api_base",
-            "temp_mail_admin_email",
-            "temp_mail_admin_password",
-            "temp_mail_site_password",
+        "proxy",
+        "browser_proxy",
+        "temp_mail_provider",
+        "temp_mail_api_base",
+        "temp_mail_admin_email",
+        "temp_mail_admin_password",
+        "temp_mail_site_password",
     ):
         if key in saved:
             base[key] = str(saved.get(key, ""))
-    # temp_mail_domain 支持数组（多域名随机选取），不做 str() 转换
     if "temp_mail_domain" in saved:
         saved_domain = saved.get("temp_mail_domain")
         if isinstance(saved_domain, str) and saved_domain.strip():
             base["temp_mail_domain"] = saved_domain.strip()
         elif isinstance(saved_domain, list):
             base["temp_mail_domain"] = saved_domain
+
     api_base = dict(base.get("api") or {})
     if "api_endpoint" in saved:
         api_base["endpoint"] = str(saved.get("api_endpoint", ""))
@@ -516,8 +275,7 @@ def merged_defaults() -> dict[str, Any]:
     return base
 
 
-def build_task_config(payload: TaskCreate) -> dict[str, Any]:
-    defaults = merged_defaults()
+def build_task_config_from_defaults(defaults: dict[str, Any], payload: TaskCreate) -> dict[str, Any]:
     api_defaults = dict(defaults.get("api") or {})
     return {
         "run": {"count": int(payload.count)},
@@ -527,7 +285,11 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
         "temp_mail_api_base": defaults.get("temp_mail_api_base", "") if payload.temp_mail_api_base is None else payload.temp_mail_api_base.strip(),
         "temp_mail_admin_email": defaults.get("temp_mail_admin_email", "") if payload.temp_mail_admin_email is None else payload.temp_mail_admin_email.strip(),
         "temp_mail_admin_password": defaults.get("temp_mail_admin_password", "") if payload.temp_mail_admin_password is None else payload.temp_mail_admin_password.strip(),
-        "temp_mail_domain": defaults.get("temp_mail_domain", "") if payload.temp_mail_domain is None else payload.temp_mail_domain,
+        "temp_mail_domain": defaults.get("temp_mail_domain", "")
+        if payload.temp_mail_domain is None
+        else payload.temp_mail_domain.strip()
+        if isinstance(payload.temp_mail_domain, str)
+        else payload.temp_mail_domain,
         "temp_mail_site_password": defaults.get("temp_mail_site_password", "") if payload.temp_mail_site_password is None else payload.temp_mail_site_password.strip(),
         "api": {
             "endpoint": api_defaults.get("endpoint", "") if payload.api_endpoint is None else payload.api_endpoint.strip(),
@@ -535,6 +297,10 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
             "append": api_defaults.get("append", True) if payload.api_append is None else bool(payload.api_append),
         },
     }
+
+
+def build_task_config(payload: TaskCreate) -> dict[str, Any]:
+    return build_task_config_from_defaults(merged_defaults(), payload)
 
 
 def serialize_task(row: sqlite3.Row) -> dict[str, Any]:
@@ -581,42 +347,26 @@ def parse_console_state(console_path: Path) -> dict[str, Any]:
         return state
 
     lines = console_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    if not lines:
-        return state
-
-    interesting = (
-        "开始第",
-        "临时邮箱创建成功",
-        "已填写邮箱并点击注册",
-        "提取到验证码",
-        "已填写验证码",
-        "最终注册页",
-        "Turnstile",
-        "已填写注册资料并点击完成注册",
-        "注册成功",
-        "[Error]",
-        "已推送到 API",
-    )
-
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
             continue
-        if m := LINE_RE_ROUND.search(line):
+        if m := re.search(r"开始第\s*(\d+)\s*轮注册", line):
             state["current_round"] = int(m.group(1))
             state["current_phase"] = "starting_round"
-        if m := LINE_RE_SUCCESS.search(line):
+        if m := re.search(r"注册成功\s*\|\s*email=([^|\s]+)", line):
             state["completed_count"] += 1
             state["last_email"] = m.group(1)
             state["current_phase"] = "success"
-        if m := LINE_RE_ERROR.search(line):
+        if m := re.search(r"\[Error\]\s*第\s*(\d+)\s*轮失败:\s*(.+)", line):
             state["failed_count"] += 1
             state["last_error"] = m.group(2).strip()
-            state["current_phase"] = "error"
-        if m := LINE_RE_TEMP_EMAIL.search(line):
+            if state["current_phase"] != "pushed_to_api":
+                state["current_phase"] = "error"
+        if m := re.search(r"临时邮箱创建成功:\s*([^\s]+)", line):
             state["last_email"] = m.group(1)
             state["current_phase"] = "mailbox_created"
-        if m := LINE_RE_FILLED_EMAIL.search(line):
+        if m := re.search(r"已填写邮箱并点击注册:\s*([^\s]+)", line):
             state["last_email"] = m.group(1)
             state["current_phase"] = "email_submitted"
         if "提取到验证码" in line:
@@ -627,10 +377,8 @@ def parse_console_state(console_path: Path) -> dict[str, Any]:
             state["current_phase"] = "turnstile_solved"
         if "已填写注册资料并点击完成注册" in line:
             state["current_phase"] = "submitting_profile"
-        if LINE_RE_PUSH.search(line):
+        if re.search(r"SSO token 已推送到 API|已推送到 API", line):
             state["current_phase"] = "pushed_to_api"
-        if any(token in line for token in interesting):
-            state["last_log_at"] = now_iso()
     return state
 
 
@@ -641,8 +389,15 @@ def task_row(task_id: int) -> sqlite3.Row:
     return row
 
 
-def delete_task_files(row: sqlite3.Row) -> None:
-    task_dir = Path(row["task_dir"])
+def delete_task_files(row: sqlite3.Row | dict[str, Any]) -> None:
+    root = TASKS_DIR.resolve()
+    task_dir = Path(row["task_dir"]).resolve()
+    try:
+        task_dir.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Task directory is outside TASKS_DIR") from exc
+    if task_dir == root:
+        raise HTTPException(status_code=400, detail="Refusing to delete TASKS_DIR")
     if task_dir.exists() and task_dir.is_dir():
         shutil.rmtree(task_dir, ignore_errors=True)
 
@@ -665,20 +420,154 @@ def copy_source_to_task_dir(task_dir: Path, task_config: dict[str, Any]) -> None
     )
 
 
+def _mask_proxy(proxy_url: str) -> str:
+    parsed = urlparse(proxy_url)
+    if not parsed.scheme or not parsed.netloc:
+        return proxy_url
+    host = parsed.hostname or ""
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{host}{port}"
+
+
+def _request_with_optional_proxy(
+    url: str,
+    proxy_url: str = "",
+    method: str = "GET",
+    timeout: int = 15,
+    headers: dict[str, str] | None = None,
+) -> requests.Response:
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+    return requests.request(method, url, timeout=timeout, headers=headers, proxies=proxies, allow_redirects=True)
+
+
+def _build_health_item(
+    key: str,
+    label: str,
+    ok: bool,
+    summary: str,
+    detail: str,
+    target: str,
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "ok": ok,
+        "summary": summary,
+        "detail": detail,
+        "target": target,
+        "checked_at": now_iso(),
+    }
+
+
+def run_health_checks() -> dict[str, Any]:
+    defaults = merged_defaults()
+    items: list[dict[str, Any]] = []
+
+    browser_proxy = str(defaults.get("browser_proxy", "") or "").strip()
+    request_proxy = str(defaults.get("proxy", "") or "").strip()
+    api_conf = dict(defaults.get("api") or {})
+    api_endpoint = str(api_conf.get("endpoint", "") or "").strip()
+    temp_mail_api_base = str(defaults.get("temp_mail_api_base", "") or "").strip()
+
+    warp_target = browser_proxy or request_proxy
+    if not warp_target:
+        items.append(_build_health_item("warp", "WARP / Proxy", False, "未配置代理出口", "当前系统默认配置里没有 `browser_proxy` 或 `proxy`，无法检查前置网络出口。", "-"))
+    else:
+        try:
+            response = _request_with_optional_proxy("https://www.cloudflare.com/cdn-cgi/trace", proxy_url=warp_target, timeout=20)
+            body = response.text
+            ip_match = re.search(r"(?m)^ip=(.+)$", body)
+            loc_match = re.search(r"(?m)^loc=(.+)$", body)
+            warp_match = re.search(r"(?m)^warp=(.+)$", body)
+            ip = ip_match.group(1).strip() if ip_match else "unknown"
+            loc = loc_match.group(1).strip() if loc_match else "unknown"
+            warp_state = warp_match.group(1).strip() if warp_match else "unknown"
+            items.append(
+                _build_health_item(
+                    "warp",
+                    "WARP / Proxy",
+                    response.status_code == 200,
+                    f"HTTP {response.status_code} | IP {ip} | LOC {loc}",
+                    f"通过代理 `{_mask_proxy(warp_target)}` 访问 Cloudflare trace 成功，warp={warp_state}。",
+                    _mask_proxy(warp_target),
+                )
+            )
+        except Exception as exc:
+            items.append(_build_health_item("warp", "WARP / Proxy", False, "代理出口不可达", f"通过 `{_mask_proxy(warp_target)}` 访问 Cloudflare trace 失败：{exc}", _mask_proxy(warp_target)))
+
+    if not api_endpoint:
+        items.append(_build_health_item("grok2api", "grok2api Admin Sink", False, "未配置 token sink", "当前系统默认配置里没有 `api.endpoint`，注册成功后不会自动入池。", "-"))
+    else:
+        try:
+            response = _request_with_optional_proxy(api_endpoint, timeout=15)
+            ok = response.status_code in {200, 401, 403, 405}
+            items.append(_build_health_item("grok2api", "grok2api Admin Sink", ok, f"HTTP {response.status_code}", "防封版管理接口已可达。即使返回 401/403，也说明服务本身在线，只是需要正确的管理口令。", api_endpoint))
+        except Exception as exc:
+            items.append(_build_health_item("grok2api", "grok2api Admin Sink", False, "接口不可达", f"访问 `{api_endpoint}` 失败：{exc}", api_endpoint))
+
+    if not temp_mail_api_base:
+        items.append(_build_health_item("temp_mail", "Temp Mail API", False, "未配置临时邮箱 API", "当前系统默认配置里没有 `temp_mail_api_base`，注册流程会在创建邮箱阶段直接失败。", "-"))
+    else:
+        try:
+            response = _request_with_optional_proxy(temp_mail_api_base, proxy_url=request_proxy, timeout=15)
+            items.append(_build_health_item("temp_mail", "Temp Mail API", response.status_code < 500, f"HTTP {response.status_code}", "接口地址可达。这里只做基础连通性检查，不会真的创建邮箱地址。", temp_mail_api_base))
+        except Exception as exc:
+            items.append(_build_health_item("temp_mail", "Temp Mail API", False, "接口不可达", f"访问 `{temp_mail_api_base}` 失败：{exc}", temp_mail_api_base))
+
+    xai_proxy = browser_proxy or request_proxy
+    try:
+        response = _request_with_optional_proxy(
+            "https://accounts.x.ai/sign-up?redirect=grok-com",
+            proxy_url=xai_proxy,
+            timeout=20,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        ok = response.status_code in {200, 301, 302, 303, 307, 308}
+        detail = f"使用 `{_mask_proxy(xai_proxy)}` 访问注册页返回 HTTP {response.status_code}。" if xai_proxy else f"直连访问注册页返回 HTTP {response.status_code}。"
+        if not ok and response.status_code in {401, 403, 429}:
+            detail += " 这通常说明当前出口被目标站点拦截、限流，或还没完成可用的人机验证链路。"
+        items.append(_build_health_item("xai", "x.ai Sign-up", ok, f"HTTP {response.status_code}", detail, "https://accounts.x.ai/sign-up?redirect=grok-com"))
+    except Exception as exc:
+        items.append(_build_health_item("xai", "x.ai Sign-up", False, "注册页不可达", f"访问 `x.ai` 注册页失败：{exc}", "https://accounts.x.ai/sign-up?redirect=grok-com"))
+
+    return {"items": items, "checked_at": now_iso()}
+
+
 class TaskSupervisor:
     def __init__(self) -> None:
         self._processes: dict[int, ManagedProcess] = {}
-        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._lock = threading.RLock()
 
     def start(self) -> None:
-        self._thread.start()
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
 
     def stop(self) -> None:
-        self._stop.set()
+        with self._lock:
+            self._stop.set()
+            managed_processes = list(self._processes.values())
+            thread = self._thread
+
+        for managed in managed_processes:
+            self._terminate_process(managed)
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=SUPERVISOR_INTERVAL + 1)
+        for managed in managed_processes:
+            exit_code = self._close_managed(managed)
+            self._mark_stopped_for_shutdown(managed, exit_code)
+
+        with self._lock:
+            self._processes.clear()
 
     def stop_task(self, task_id: int) -> None:
-        managed = self._processes.get(task_id)
+        with self._lock:
+            managed = self._processes.get(task_id)
         if not managed:
             row = task_row(task_id)
             if row["status"] == STATUS_QUEUED:
@@ -692,17 +581,16 @@ class TaskSupervisor:
                 )
                 return
             raise HTTPException(status_code=409, detail="Task is not running")
+
         execute_no_return(
             "UPDATE tasks SET status = ?, last_error = ?, current_phase = ? WHERE id = ?",
             (STATUS_STOPPING, "Stopping task...", STATUS_STOPPING, task_id),
         )
-        try:
-            os.killpg(managed.process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
+        self._terminate_process(managed)
 
     def _running_count(self) -> int:
-        return len(self._processes)
+        with self._lock:
+            return len(self._processes)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -711,7 +599,7 @@ class TaskSupervisor:
                 self._launch_queued()
             except Exception:
                 pass
-            time.sleep(SUPERVISOR_INTERVAL)
+            self._stop.wait(SUPERVISOR_INTERVAL)
 
     def _launch_queued(self) -> None:
         slots = MAX_CONCURRENT_TASKS - self._running_count()
@@ -722,34 +610,55 @@ class TaskSupervisor:
             (STATUS_QUEUED, slots),
         )
         for row in queued:
+            if self._stop.is_set():
+                return
             self._start_task(row)
 
     def _start_task(self, row: sqlite3.Row) -> None:
         task_id = int(row["id"])
         task_dir = Path(row["task_dir"])
         console_path = Path(row["console_path"])
-        task_config = json.loads(row["config_json"])
-        copy_source_to_task_dir(task_dir, task_config)
+        try:
+            task_config = json.loads(row["config_json"])
+            copy_source_to_task_dir(task_dir, task_config)
 
-        output_path = task_dir / "sso" / f"task_{task_id}.txt"
-        command = [
-            str(SOURCE_VENV_PYTHON),
-            str(task_dir / "DrissionPage_example.py"),
-            "--count",
-            str(int(row["target_count"])),
-            "--output",
-            str(output_path),
-        ]
-        log_handle = console_path.open("a", encoding="utf-8")
-        process = subprocess.Popen(
-            command,
-            cwd=task_dir,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            text=True,
-        )
-        self._processes[task_id] = ManagedProcess(task_id=task_id, process=process, log_handle=log_handle)
+            output_path = task_dir / "sso" / f"task_{task_id}.txt"
+            command = [
+                str(SOURCE_PYTHON),
+                str(task_dir / "DrissionPage_example.py"),
+                "--count",
+                str(int(row["target_count"])),
+                "--output",
+                str(output_path),
+            ]
+            log_handle = console_path.open("a", encoding="utf-8")
+            popen_kwargs: dict[str, Any] = {
+                "cwd": task_dir,
+                "stdout": log_handle,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+            }
+            if os.name != "nt":
+                popen_kwargs["start_new_session"] = True
+            elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        except Exception as exc:
+            self._mark_start_failed(task_id, exc)
+            raise
+
+        try:
+            process = subprocess.Popen(command, **popen_kwargs)
+        except Exception as exc:
+            log_handle.close()
+            self._mark_start_failed(task_id, exc)
+            raise
+
+        with self._lock:
+            self._processes[task_id] = ManagedProcess(
+                task_id=task_id,
+                process=process,
+                log_handle=log_handle,
+            )
         execute_no_return(
             """
             UPDATE tasks
@@ -761,7 +670,9 @@ class TaskSupervisor:
 
     def _refresh_running(self) -> None:
         finished: list[int] = []
-        for task_id, managed in list(self._processes.items()):
+        with self._lock:
+            managed_items = list(self._processes.items())
+        for task_id, managed in managed_items:
             row = task_row(task_id)
             console_path = Path(row["console_path"])
             parsed = parse_console_state(console_path)
@@ -786,6 +697,7 @@ class TaskSupervisor:
             exit_code = managed.process.poll()
             if exit_code is None:
                 continue
+
             final_status = STATUS_FAILED
             if row["status"] == STATUS_STOPPING or exit_code in (-15, -9):
                 final_status = STATUS_STOPPED
@@ -798,7 +710,7 @@ class TaskSupervisor:
                 UPDATE tasks
                 SET status = ?, finished_at = ?, exit_code = ?,
                     completed_count = ?, failed_count = ?, current_round = ?, current_phase = ?,
-                    last_email = ?, last_error = ?, last_log_at = ?
+                    last_email = ?, last_error = ?, last_log_at = ?, pid = NULL
                 WHERE id = ?
                 """,
                 (
@@ -816,44 +728,94 @@ class TaskSupervisor:
                 ),
             )
             finished.append(task_id)
+
         for task_id in finished:
-            managed = self._processes.pop(task_id, None)
-            if managed and managed.log_handle:
-                managed.log_handle.close()
+            with self._lock:
+                managed = self._processes.pop(task_id, None)
+            if managed:
+                self._close_managed(managed)
+
+    def _terminate_process(self, managed: ManagedProcess) -> None:
+        if managed.process.poll() is not None:
+            return
+        try:
+            if os.name == "nt":
+                # Windows cannot reliably terminate a whole descendant tree here;
+                # start new process group and terminate the parent process.
+                managed.process.terminate()
+            else:
+                os.killpg(managed.process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            managed.process.terminate()
+
+    def _close_managed(self, managed: ManagedProcess) -> int | None:
+        exit_code: int | None = None
+        try:
+            exit_code = managed.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                managed.process.kill()
+                exit_code = managed.process.wait(timeout=5)
+            except OSError:
+                pass
+        if managed.log_handle:
+            managed.log_handle.close()
+        return exit_code
+
+    def _mark_stopped_for_shutdown(self, managed: ManagedProcess, exit_code: int | None) -> None:
+        try:
+            task_row(managed.task_id)
+        except HTTPException:
+            return
+        execute_no_return(
+            """
+            UPDATE tasks
+            SET status = ?, finished_at = ?, exit_code = ?, current_phase = ?,
+                last_error = ?, pid = NULL
+            WHERE id = ? AND status IN (?, ?)
+            """,
+            (
+                STATUS_STOPPED,
+                now_iso(),
+                exit_code,
+                STATUS_STOPPED,
+                "Task stopped during application shutdown.",
+                managed.task_id,
+                STATUS_RUNNING,
+                STATUS_STOPPING,
+            ),
+        )
+
+    def _mark_start_failed(self, task_id: int, exc: Exception) -> None:
+        execute_no_return(
+            """
+            UPDATE tasks
+            SET status = ?, finished_at = ?, exit_code = NULL, current_phase = ?,
+                last_error = ?, pid = NULL
+            WHERE id = ?
+            """,
+            (STATUS_FAILED, now_iso(), "start_failed", str(exc), task_id),
+        )
 
 
 supervisor = TaskSupervisor()
 
 
-@asynccontextmanager
-async def lifespan(_: FastAPI):
+def start_register_supervisor() -> None:
     init_db()
     supervisor.start()
-    try:
-        yield
-    finally:
-        supervisor.stop()
 
 
-app = FastAPI(title="Grok Register Console", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
+def stop_register_supervisor() -> None:
+    supervisor.stop()
 
 
-@app.get("/", response_class=HTMLResponse)
-def index(request: Request) -> HTMLResponse:
-    return TEMPLATES.TemplateResponse(
-        request,
-        "index.html",
-        {
-            "request": request,
-            "defaults": json.dumps(merged_defaults(), ensure_ascii=False),
-            "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
-            "source_project": str(SOURCE_PROJECT),
-        },
-    )
+router = APIRouter(prefix="/register", tags=["Admin - Register"])
 
 
-@app.get("/api/meta")
+@router.get("/meta")
 def api_meta() -> dict[str, Any]:
     return {
         "defaults": merged_defaults(),
@@ -864,29 +826,29 @@ def api_meta() -> dict[str, Any]:
     }
 
 
-@app.get("/api/health")
+@router.get("/health")
 def api_health() -> dict[str, Any]:
     return run_health_checks()
 
 
-@app.get("/api/settings")
+@router.get("/settings")
 def get_settings() -> dict[str, Any]:
     return {"settings": read_settings(), "defaults": merged_defaults()}
 
 
-@app.post("/api/settings")
+@router.post("/settings")
 def save_settings(payload: SystemSettings) -> dict[str, Any]:
     saved = write_settings(payload)
     return {"settings": saved, "defaults": merged_defaults()}
 
 
-@app.get("/api/tasks")
+@router.get("/tasks")
 def list_tasks() -> dict[str, Any]:
     rows = fetch_all("SELECT * FROM tasks ORDER BY id DESC")
     return {"tasks": [serialize_task(row) for row in rows]}
 
 
-@app.post("/api/tasks")
+@router.post("/tasks")
 def create_task(payload: TaskCreate) -> dict[str, Any]:
     if not SOURCE_PROJECT.exists():
         raise HTTPException(status_code=500, detail=f"Source project not found: {SOURCE_PROJECT}")
@@ -913,46 +875,42 @@ def create_task(payload: TaskCreate) -> dict[str, Any]:
     )
     task_dir = TASKS_DIR / f"task_{task_id}"
     console_path = task_dir / "console.log"
-    task_dir.mkdir(parents=True, exist_ok=True)
-    execute_no_return(
-        "UPDATE tasks SET task_dir = ?, console_path = ? WHERE id = ?",
-        (str(task_dir), str(console_path), task_id),
-    )
+    try:
+        task_dir.mkdir(parents=True, exist_ok=True)
+        execute_no_return(
+            "UPDATE tasks SET task_dir = ?, console_path = ? WHERE id = ?",
+            (str(task_dir), str(console_path), task_id),
+        )
+    except Exception:
+        execute_no_return("DELETE FROM tasks WHERE id = ?", (task_id,))
+        if task_dir.exists():
+            delete_task_files({"task_dir": str(task_dir)})
+        raise
     return {"task": serialize_task(task_row(task_id))}
 
 
-@app.get("/api/tasks/{task_id}")
+@router.get("/tasks/{task_id}")
 def get_task(task_id: int) -> dict[str, Any]:
     return {"task": serialize_task(task_row(task_id))}
 
 
-@app.get("/api/tasks/{task_id}/logs")
+@router.get("/tasks/{task_id}/logs")
 def get_task_logs(task_id: int, limit: int = Query(200, ge=20, le=1000)) -> dict[str, Any]:
     row = task_row(task_id)
-    console_path = Path(row["console_path"])
-    return {"lines": read_log_lines(console_path, limit=limit)}
+    return {"lines": read_log_lines(Path(row["console_path"]), limit=limit)}
 
 
-@app.post("/api/tasks/{task_id}/stop")
+@router.post("/tasks/{task_id}/stop")
 def stop_task(task_id: int) -> dict[str, Any]:
     supervisor.stop_task(task_id)
     return {"ok": True}
 
 
-@app.delete("/api/tasks/{task_id}")
+@router.delete("/tasks/{task_id}")
 def delete_task(task_id: int) -> dict[str, Any]:
     row = task_row(task_id)
-    managed = supervisor._processes.get(task_id)
-    if managed and managed.process.poll() is None:
+    if row["status"] in {STATUS_RUNNING, STATUS_STOPPING}:
         raise HTTPException(status_code=409, detail="Task is still running")
     delete_task_files(row)
     execute_no_return("DELETE FROM tasks WHERE id = ?", (task_id,))
     return {"ok": True}
-
-
-if __name__ == "__main__":
-    import uvicorn
-
-    host = os.getenv("GROK_REGISTER_CONSOLE_HOST", "127.0.0.1")
-    port = int(os.getenv("GROK_REGISTER_CONSOLE_PORT", "18600"))
-    uvicorn.run("app:app", host=host, port=port, reload=False)

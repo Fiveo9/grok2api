@@ -2,18 +2,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONSOLE_DIR="$ROOT_DIR/apps/console"
-CONSOLE_VENV="$CONSOLE_DIR/.venv"
 
 export GROK_REGISTER_SOURCE_DIR="${GROK_REGISTER_SOURCE_DIR:-$ROOT_DIR}"
 export GROK_REGISTER_PYTHON="${GROK_REGISTER_PYTHON:-$ROOT_DIR/.venv/bin/python}"
-export GROK_REGISTER_CONSOLE_HOST="${GROK_REGISTER_CONSOLE_HOST:-0.0.0.0}"
-export GROK_REGISTER_CONSOLE_PORT="${GROK_REGISTER_CONSOLE_PORT:-18600}"
 export GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS="${GROK_REGISTER_CONSOLE_MAX_CONCURRENT_TASKS:-1}"
+export SERVER_HOST="${SERVER_HOST:-0.0.0.0}"
+export SERVER_PORT="${SERVER_PORT:-8000}"
+export SERVER_WORKERS="${SERVER_WORKERS:-1}"
 
-if [[ ! -d "$CONSOLE_VENV" ]]; then
-  python3 -m venv "$CONSOLE_VENV"
-fi
-
-"$CONSOLE_VENV/bin/pip" install -r "$CONSOLE_DIR/requirements.txt"
-exec "$CONSOLE_VENV/bin/python" "$CONSOLE_DIR/app.py"
+cd "$ROOT_DIR"
+exec "$GROK_REGISTER_PYTHON" -m granian --interface asgi --host "$SERVER_HOST" --port "$SERVER_PORT" --workers "$SERVER_WORKERS" app.main:app

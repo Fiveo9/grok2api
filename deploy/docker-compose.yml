@@ -1,8 +1,8 @@
 services:
-  warp:
+  warp-proxy:
     extends:
       file: ../docker-compose.register.yml
-      service: warp
+      service: warp-proxy
     restart: unless-stopped
 
   privoxy:
@@ -27,12 +27,6 @@ services:
     extends:
       file: ../docker-compose.register.yml
       service: grok2api
-    restart: unless-stopped
-
-  console:
-    extends:
-      file: ../docker-compose.register.yml
-      service: console
     restart: unless-stopped
 
   worker-runtime:
