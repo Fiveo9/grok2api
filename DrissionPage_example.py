@@ -9,6 +9,10 @@ import time
 import os
 import secrets
 import sys
+import threading
+from faker import Faker
+
+fake = Faker('en_US')
 
 from email_register import get_email_and_token, get_oai_code
 
@@ -708,8 +712,8 @@ Object.defineProperty(MouseEvent.prototype, 'screenY', { value: screenY });
 
 def build_profile():
     # 生成一组可重复使用的注册资料，密码至少包含大小写、数字和特殊字符。
-    given_name = "Neo"
-    family_name = "Lin"
+    given_name = fake.first_name()  # 随机生成名
+    family_name = fake.last_name()  # 随机生成姓
     password = "N" + secrets.token_hex(4) + "!a7#" + secrets.token_urlsafe(6)
     return given_name, family_name, password
 
