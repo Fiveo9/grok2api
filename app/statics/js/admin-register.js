@@ -241,7 +241,7 @@
     event.preventDefault();
     const notice = $('register-settings-notice');
     try {
-      const data = await api('/settings', { method: 'POST', body: JSON.stringify(formPayload(event.currentTarget, true)) });
+      const data = await api('/settings', { method: 'POST', body: JSON.stringify(formPayload(event.target, true)) });
       renderSettingsForm(data.settings || {}, data.defaults || {});
       renderCreateForm();
       if (notice) notice.textContent = '默认设置已保存。';
@@ -254,7 +254,7 @@
     event.preventDefault();
     const notice = $('register-create-notice');
     try {
-      const data = await api('/tasks', { method: 'POST', body: JSON.stringify(formPayload(event.currentTarget, false)) });
+      const data = await api('/tasks', { method: 'POST', body: JSON.stringify(formPayload(event.target, false)) });
       selectedTaskId = data.task?.id || null;
       if (notice) notice.textContent = '任务已创建。';
       renderCreateForm();
