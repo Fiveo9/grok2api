@@ -18,6 +18,14 @@
 - `temp_mail_admin_email` / `temp_mail_admin_password` 填 Cloud Mail 管理员邮箱和密码
 - `temp_mail_domain` 填要创建账号的邮箱后缀
 
+如果你用的是 AHEM：
+
+- 把 `temp_mail_provider` 填成 `ahem`
+- `temp_mail_api_base` 填 AHEM API 根地址
+- `temp_mail_admin_email` / `temp_mail_admin_password` 不需要填写
+- `temp_mail_domain` 可留空，域名会从 `GET /properties` 返回的 `allowedDomains` 字段获取
+- 执行器会使用邮箱前缀轮询 `/mailbox/<prefix>/email` 和 `/mailbox/<prefix>/email/<id>`
+
 ## 一句话说明
 
 当前执行器实际依赖 3 个接口：
@@ -215,13 +223,13 @@ x-custom-auth: <temp_mail_site_password>
 - `temp_mail_api_base`
   - 邮箱服务根地址，例如 `https://mail-api.example.com`
 - `temp_mail_provider`
-  - 邮箱服务类型；Cloud Mail 填 `cloudmail`，DuckMail 可填 `duckmail` 或留空自动识别
+  - 邮箱服务类型；`ahem`：使用 AHEM 邮箱接口；Cloud Mail 填 `cloudmail`，DuckMail 可填 `duckmail` 或留空自动识别
 - `temp_mail_admin_email`
-  - Cloud Mail 管理员邮箱；自定义 Temp Mail / DuckMail 可留空
+  - Cloud Mail 管理员邮箱；AHEM / 自定义 Temp Mail / DuckMail 可留空
 - `temp_mail_admin_password`
-  - 自定义 Temp Mail 创建邮箱时放在 `x-admin-auth` 头里的管理口令；Cloud Mail 场景为管理员邮箱密码
+  - 自定义 Temp Mail 创建邮箱时放在 `x-admin-auth` 头里的管理口令；Cloud Mail 场景为管理员邮箱密码；AHEM 不需要
 - `temp_mail_domain`
-  - 实际注册时使用的邮箱后缀
+  - 实际注册时使用的邮箱后缀；AHEM 可留空并从 `GET /properties` 返回的 `allowedDomains` 字段获取
 - `temp_mail_site_password`
   - 可选的站点级鉴权口令，对应 `x-custom-auth`
 - `proxy`
