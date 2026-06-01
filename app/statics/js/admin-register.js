@@ -10,6 +10,7 @@
   let isPollingTasks = false;
   let selectedTaskId = null;
   let currentDefaults = {};
+  let cloudMailDomainDraft = '';
   let eventsBound = false;
 
   const $ = (id) => document.getElementById(id);
@@ -24,6 +25,14 @@
     const stringValue = String(value ?? '').trim();
     return stringValue || fallback;
   };
+
+  const renderDetailValue = (value) => Array.isArray(value)
+    ? (value.map((item) => esc(String(item ?? '').trim())).filter(Boolean).join('<br>') || '-')
+    : esc(text(value));
+
+  const isCloudMailProvider = (value) => String(value || '').trim().toLowerCase() === 'cloudmail';
+
+  const domainFieldValue = (value) => Array.isArray(value) ? value.join('\n') : String(value ?? '');
 
   const api = async (path, options = {}) => {
     const headers = {
@@ -57,25 +66,41 @@
 
   const fieldValue = (data, key, fallback = '') => data?.[key] ?? fallback ?? '';
 
+  const renderTempMailDomainField = (provider, value) => `
+    <div id="register-temp-mail-domain-field">
+      ${isCloudMailProvider(provider)
+        ? textareaField('temp_mail_domain', '邮箱域名', domainFieldValue(value), 'example.com')
+        : inputField('temp_mail_domain', '邮箱域名', domainFieldValue(value), 'example.com')}
+    </div>`;
+
   const renderSettingsForm = (settings = {}, defaults = {}) => {
     currentDefaults = defaults || {};
     const apiDefaults = currentDefaults.api || {};
     const form = $('register-settings-form');
     if (!form) return;
+    const provider = fieldValue(settings, 'temp_mail_provider', currentDefaults.temp_mail_provider);
+    const domainValue = fieldValue(settings, 'temp_mail_domain', currentDefaults.temp_mail_domain);
+    cloudMailDomainDraft = domainFieldValue(domainValue);
     form.innerHTML = [
       inputField('proxy', '请求代理', fieldValue(settings, 'proxy', currentDefaults.proxy), 'http://127.0.0.1:7890'),
       inputField('browser_proxy', '浏览器代理', fieldValue(settings, 'browser_proxy', currentDefaults.browser_proxy), 'http://127.0.0.1:7890'),
-      inputField('temp_mail_provider', '邮箱服务商', fieldValue(settings, 'temp_mail_provider', currentDefaults.temp_mail_provider), 'cloudmail'),
+      selectField('temp_mail_provider', '邮箱服务商', provider, [
+        ['cloudmail', 'cloudmail'],
+        ['duckmail', 'duckmail'],
+        ['ahem', 'ahem'],
+        ['generic', 'generic'],
+      ]),
       inputField('temp_mail_api_base', '邮箱 API', fieldValue(settings, 'temp_mail_api_base', currentDefaults.temp_mail_api_base), 'https://example.com'),
       inputField('temp_mail_admin_email', '邮箱管理员', fieldValue(settings, 'temp_mail_admin_email', currentDefaults.temp_mail_admin_email), 'admin@example.com'),
       inputField('temp_mail_admin_password', '邮箱密码', fieldValue(settings, 'temp_mail_admin_password', currentDefaults.temp_mail_admin_password), '', 'password'),
-      inputField('temp_mail_domain', '邮箱域名', fieldValue(settings, 'temp_mail_domain', currentDefaults.temp_mail_domain), 'example.com'),
+      renderTempMailDomainField(provider, domainValue),
       inputField('temp_mail_site_password', '站点密码', fieldValue(settings, 'temp_mail_site_password', currentDefaults.temp_mail_site_password), '', 'password'),
       inputField('api_endpoint', 'Token Sink', fieldValue(settings, 'api_endpoint', apiDefaults.endpoint), 'http://127.0.0.1:8000/admin/api/tokens', 'text', true),
       inputField('api_token', 'Token Sink Key', fieldValue(settings, 'api_token', apiDefaults.token), '', 'password'),
       checkboxField('api_append', '追加写入 token', fieldValue(settings, 'api_append', apiDefaults.append ?? true)),
       '<div class="form-field wide"><button type="submit" class="page-action-btn page-action-btn-primary">保存默认设置</button></div>',
     ].join('');
+    form.dataset.tempMailProvider = String(provider || '');
   };
 
   const renderCreateForm = () => {
@@ -101,6 +126,24 @@
       <input id="register-${esc(name)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" placeholder="${esc(placeholder)}">
     </div>`;
 
+  const selectField = (name, label, value, options, wide = false) => {
+    const stringValue = String(value ?? '');
+    const normalizedOptions = options.some(([optionValue]) => String(optionValue) === stringValue)
+      ? options
+      : (stringValue ? [[stringValue, stringValue], ...options] : options);
+    return `
+    <div class="form-field${wide ? ' wide' : ''}">
+      <label for="register-${esc(name)}">${esc(label)}</label>
+      <select id="register-${esc(name)}" name="${esc(name)}">${normalizedOptions.map(([optionValue, optionLabel]) => `<option value="${esc(optionValue)}" ${String(optionValue) === stringValue ? 'selected' : ''}>${esc(optionLabel)}</option>`).join('')}</select>
+    </div>`;
+  };
+
+  const textareaField = (name, label, value, placeholder = '', wide = false) => `
+    <div class="form-field${wide ? ' wide' : ''}">
+      <label for="register-${esc(name)}">${esc(label)}</label>
+      <textarea id="register-${esc(name)}" name="${esc(name)}" placeholder="${esc(placeholder)}">${esc(value)}</textarea>
+    </div>`;
+
   const checkboxField = (name, label, checked) => `
     <div class="form-field">
       <label>${esc(label)}</label>
@@ -117,6 +160,16 @@
     }
     if (form.elements.count) payload.count = Math.max(1, Number(payload.count || 1));
     payload.api_append = Boolean(form.elements.api_append?.checked);
+    if (form.id === 'register-settings-form') {
+      const provider = String(payload.temp_mail_provider || '').trim().toLowerCase();
+      if (provider === 'cloudmail' && Object.prototype.hasOwnProperty.call(payload, 'temp_mail_domain')) {
+        const domains = String(payload.temp_mail_domain || '')
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean);
+        payload.temp_mail_domain = domains;
+      }
+    }
     return payload;
   };
 
@@ -216,7 +269,7 @@
       ['最近错误', text(task.last_error)],
       ['请求代理', text(config.proxy)],
       ['浏览器代理', text(config.browser_proxy)],
-      ['邮箱域名', text(config.temp_mail_domain)],
+      ['邮箱域名', config.temp_mail_domain],
       ['Token Sink', text(apiConf.endpoint)],
       ['PID', text(task.pid)],
       ['退出码', text(task.exit_code)],
@@ -224,7 +277,7 @@
     detail.innerHTML = items.map(([label, value]) => `
       <div class="detail-item">
         <div class="detail-label">${esc(label)}</div>
-        <div class="detail-value">${esc(value)}</div>
+        <div class="detail-value">${renderDetailValue(value)}</div>
       </div>`).join('');
   };
 
@@ -298,6 +351,31 @@
     document.addEventListener('submit', (event) => {
       if (event.target?.id === 'register-settings-form') saveSettings(event);
       if (event.target?.id === 'register-create-form') createTask(event);
+    });
+    document.addEventListener('change', (event) => {
+      if (event.target?.name !== 'temp_mail_provider' || event.target.form?.id !== 'register-settings-form') return;
+      const form = event.target.form;
+      const previousProvider = form.dataset.tempMailProvider || '';
+      const domainField = form.elements.temp_mail_domain;
+      const domainWrap = $('register-temp-mail-domain-field');
+      if (!domainWrap) return;
+      const currentDomainValue = domainField?.value || '';
+      if (isCloudMailProvider(previousProvider)) {
+        cloudMailDomainDraft = currentDomainValue || cloudMailDomainDraft;
+      }
+      const nextProvider = event.target.value;
+      const nextDomainValue = isCloudMailProvider(nextProvider)
+        ? (isCloudMailProvider(previousProvider) ? cloudMailDomainDraft : currentDomainValue)
+        : currentDomainValue;
+      if (isCloudMailProvider(nextProvider)) cloudMailDomainDraft = nextDomainValue;
+      domainWrap.outerHTML = renderTempMailDomainField(nextProvider, nextDomainValue);
+      form.dataset.tempMailProvider = String(nextProvider || '');
+    });
+    document.addEventListener('input', (event) => {
+      if (event.target?.name === 'temp_mail_domain' && event.target.form?.id === 'register-settings-form') {
+        const provider = event.target.form.dataset.tempMailProvider || event.target.form.elements.temp_mail_provider?.value || '';
+        if (isCloudMailProvider(provider)) cloudMailDomainDraft = event.target.value || '';
+      }
     });
     $('register-task-list')?.addEventListener('click', handleTaskAction);
     $('register-refresh-health')?.addEventListener('click', () => loadHealth().catch(showError));

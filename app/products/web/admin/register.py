@@ -71,7 +71,7 @@ class SystemSettings(BaseModel):
     temp_mail_api_base: str = ""
     temp_mail_admin_email: str = ""
     temp_mail_admin_password: str = ""
-    temp_mail_domain: str = ""
+    temp_mail_domain: str | list[str] = ""
     temp_mail_site_password: str = ""
     api_endpoint: str = ""
     api_token: str = ""
@@ -230,8 +230,17 @@ def read_settings() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _clean_domain_list(values: list[Any]) -> list[str]:
+    return [value.strip() for value in values if isinstance(value, str) and value.strip()]
+
+
 def write_settings(settings: SystemSettings) -> dict[str, Any]:
     data = settings.model_dump()
+    temp_mail_domain = data.get("temp_mail_domain")
+    if isinstance(temp_mail_domain, list):
+        data["temp_mail_domain"] = _clean_domain_list(temp_mail_domain)
+    elif isinstance(temp_mail_domain, str):
+        data["temp_mail_domain"] = temp_mail_domain.strip()
     execute(
         """
         INSERT INTO settings (key, value, updated_at)
@@ -262,7 +271,7 @@ def merged_defaults() -> dict[str, Any]:
         if isinstance(saved_domain, str) and saved_domain.strip():
             base["temp_mail_domain"] = saved_domain.strip()
         elif isinstance(saved_domain, list):
-            base["temp_mail_domain"] = saved_domain
+            base["temp_mail_domain"] = _clean_domain_list(saved_domain)
 
     api_base = dict(base.get("api") or {})
     if "api_endpoint" in saved:

@@ -52,6 +52,44 @@ class RegisterConsoleHelperTests(unittest.TestCase):
         self.assertEqual(loaded, saved)
         self.assertFalse(loaded["api_append"])
 
+    def test_write_and_read_settings_preserves_cloudmail_domain_arrays(self):
+        import app.products.web.admin.register as register
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "register"
+            with patch.object(register, "REGISTER_ROOT", root), patch.object(register, "TASKS_DIR", root / "tasks"), patch.object(register, "DB_PATH", root / "console.db"):
+                register.init_db()
+                saved = register.write_settings(
+                    register.SystemSettings(
+                        temp_mail_provider="cloudmail",
+                        temp_mail_api_base="https://mail.example.com",
+                        temp_mail_domain=[" one.example.com ", "", "two.example.com", "   "],
+                    )
+                )
+                loaded = register.read_settings()
+
+        self.assertEqual(saved["temp_mail_domain"], ["one.example.com", "two.example.com"])
+        self.assertEqual(loaded["temp_mail_domain"], ["one.example.com", "two.example.com"])
+
+    def test_write_settings_ignores_non_string_domain_array_items(self):
+        import app.products.web.admin.register as register
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "register"
+            with patch.object(register, "REGISTER_ROOT", root), patch.object(register, "TASKS_DIR", root / "tasks"), patch.object(register, "DB_PATH", root / "console.db"):
+                register.init_db()
+                saved = register.write_settings(
+                    register.SystemSettings.model_construct(
+                        temp_mail_provider="cloudmail",
+                        temp_mail_api_base="https://mail.example.com",
+                        temp_mail_domain=[" one.example.com ", None, 7, "", " two.example.com "],
+                    )
+                )
+                loaded = register.read_settings()
+
+        self.assertEqual(saved["temp_mail_domain"], ["one.example.com", "two.example.com"])
+        self.assertEqual(loaded["temp_mail_domain"], ["one.example.com", "two.example.com"])
+
     def test_delete_task_files_rejects_paths_outside_tasks_dir_and_tasks_dir_itself(self):
         import app.products.web.admin.register as register
 
@@ -139,6 +177,51 @@ class RegisterConsoleHelperTests(unittest.TestCase):
         self.assertEqual(result["api"]["token"], "override-key")
         self.assertFalse(result["api"]["append"])
 
+    def test_build_task_config_preserves_default_domain_array_when_no_override(self):
+        from app.products.web.admin.register import TaskCreate, build_task_config_from_defaults
+
+        defaults = {
+            "run": {"count": 50},
+            "proxy": "",
+            "browser_proxy": "",
+            "temp_mail_provider": "cloudmail",
+            "temp_mail_api_base": "https://mail.example.com",
+            "temp_mail_admin_email": "admin@example.com",
+            "temp_mail_admin_password": "secret",
+            "temp_mail_domain": ["one.example.com", "two.example.com"],
+            "temp_mail_site_password": "",
+            "api": {"endpoint": "", "token": "", "append": True},
+        }
+        payload = TaskCreate(name="batch-1", count=3, temp_mail_domain=None)
+
+        result = build_task_config_from_defaults(defaults, payload)
+
+        self.assertEqual(result["temp_mail_domain"], ["one.example.com", "two.example.com"])
+
+    def test_merged_defaults_preserves_trimmed_saved_domain_arrays(self):
+        import app.products.web.admin.register as register
+
+        source_defaults = {
+            "run": {"count": 50},
+            "proxy": "",
+            "browser_proxy": "",
+            "temp_mail_provider": "cloudmail",
+            "temp_mail_api_base": "https://mail.example.com",
+            "temp_mail_admin_email": "admin@example.com",
+            "temp_mail_admin_password": "secret",
+            "temp_mail_domain": "fallback.example.com",
+            "temp_mail_site_password": "",
+            "api": {"endpoint": "", "token": "", "append": True},
+        }
+        saved_settings = {
+            "temp_mail_domain": [" one.example.com ", "", "two.example.com", "   "],
+        }
+
+        with patch.object(register, "load_source_defaults", return_value=source_defaults), patch.object(register, "read_settings", return_value=saved_settings):
+            result = register.merged_defaults()
+
+        self.assertEqual(result["temp_mail_domain"], ["one.example.com", "two.example.com"])
+
     def test_parse_console_state_extracts_progress(self):
         from app.products.web.admin.register import parse_console_state
 
@@ -197,6 +280,34 @@ class RegisterConsoleHelperTests(unittest.TestCase):
         self.assertEqual(result["name"], "batch")
         self.assertEqual(result["config"], {"run": {"count": 2}})
 
+    def test_serialize_task_detail_formats_domain_array_readably(self):
+        import app.products.web.admin.register as register
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE tasks (
+                id INTEGER, name TEXT, status TEXT, target_count INTEGER,
+                completed_count INTEGER, failed_count INTEGER, current_round INTEGER,
+                current_phase TEXT, last_email TEXT, last_error TEXT, last_log_at TEXT,
+                notes TEXT, config_json TEXT, task_dir TEXT, console_path TEXT,
+                pid INTEGER, created_at TEXT, started_at TEXT, finished_at TEXT,
+                exit_code INTEGER
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO tasks VALUES (1, 'batch', 'queued', 2, 0, 0, 0, '', '', '', '', '', ?, '/tmp/task', '/tmp/log', NULL, 'now', NULL, NULL, NULL)",
+            (json.dumps({"temp_mail_domain": ["one.example.com", "two.example.com"]}),),
+        )
+        row = conn.execute("SELECT * FROM tasks").fetchone()
+
+        result = register.serialize_task(row)
+        conn.close()
+
+        self.assertEqual(result["config"]["temp_mail_domain"], ["one.example.com", "two.example.com"])
+
     def test_register_router_is_mounted_on_main_app(self):
         from app.main import app
 
@@ -230,6 +341,42 @@ class RegisterConsoleHelperTests(unittest.TestCase):
         self.assertNotIn("setInterval(", js)
         self.assertIn("pollTasks", js)
         self.assertIn("isPollingTasks", js)
+
+    def test_register_admin_js_renders_provider_select_and_cloudmail_domain_textarea(self):
+        js = (Path(__file__).parents[1] / "app" / "statics" / "js" / "admin-register.js").read_text(encoding="utf-8")
+
+        self.assertIn("temp_mail_provider", js)
+        self.assertIn("temp_mail_domain", js)
+        self.assertIn("<select", js)
+        self.assertIn("<textarea", js)
+        self.assertIn("cloudmail", js)
+        self.assertIn("duckmail", js)
+        self.assertIn("ahem", js)
+        self.assertIn("generic", js)
+
+    def test_register_admin_js_preserves_unknown_selected_provider_option(self):
+        js = (Path(__file__).parents[1] / "app" / "statics" / "js" / "admin-register.js").read_text(encoding="utf-8")
+
+        self.assertIn("const stringValue = String(value ?? '');", js)
+        self.assertIn("options.some(([optionValue]) => String(optionValue) === stringValue)", js)
+        self.assertIn("[[stringValue, stringValue], ...options]", js)
+        self.assertIn("String(optionValue) === stringValue ? 'selected' : ''", js)
+
+    def test_register_admin_js_serializes_cloudmail_domain_lines(self):
+        js = (Path(__file__).parents[1] / "app" / "statics" / "js" / "admin-register.js").read_text(encoding="utf-8")
+
+        self.assertIn("provider === 'cloudmail'", js)
+        self.assertIn("split(/\\r?\\n/)", js)
+        self.assertIn("payload.temp_mail_domain = domains", js)
+
+    def test_register_admin_js_formats_domain_arrays_for_detail_view(self):
+        js = (Path(__file__).parents[1] / "app" / "statics" / "js" / "admin-register.js").read_text(encoding="utf-8")
+
+        self.assertIn("config.temp_mail_domain],", js)
+        self.assertIn("<div class=\"detail-value\">${renderDetailValue(value)}</div>", js)
+        self.assertIn(": esc(text(value));", js)
+        self.assertIn(".join('<br>')", js)
+        self.assertNotIn("if (Array.isArray(value)) {", js)
 
     def test_task_supervisor_start_stop_are_idempotent(self):
         import app.products.web.admin.register as register
