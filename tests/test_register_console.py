@@ -8,6 +8,12 @@ from unittest.mock import Mock, patch
 
 
 class RegisterConsoleHelperTests(unittest.TestCase):
+    def test_gitignore_excludes_root_config_json(self):
+        gitignore = (Path(__file__).resolve().parents[1] / ".gitignore").read_text(encoding="utf-8")
+        rules = {line.strip() for line in gitignore.splitlines() if line.strip() and not line.startswith("#")}
+
+        self.assertIn("/config.json", rules)
+
     def test_init_db_creates_settings_and_tasks_tables(self):
         import app.products.web.admin.register as register
 
@@ -51,6 +57,46 @@ class RegisterConsoleHelperTests(unittest.TestCase):
 
         self.assertEqual(loaded, saved)
         self.assertFalse(loaded["api_append"])
+
+    def test_write_settings_preserves_existing_sensitive_values_when_blank(self):
+        import app.products.web.admin.register as register
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "register"
+            with patch.object(register, "REGISTER_ROOT", root), patch.object(register, "TASKS_DIR", root / "tasks"), patch.object(register, "DB_PATH", root / "console.db"):
+                register.init_db()
+                register.write_settings(
+                    register.SystemSettings(
+                        temp_mail_admin_password="mail-secret",
+                        temp_mail_site_password="site-secret",
+                        api_token="api-secret",
+                    )
+                )
+
+                saved = register.write_settings(register.SystemSettings())
+
+        self.assertEqual(saved["temp_mail_admin_password"], "mail-secret")
+        self.assertEqual(saved["temp_mail_site_password"], "site-secret")
+        self.assertEqual(saved["api_token"], "api-secret")
+
+    def test_mask_settings_hides_sensitive_values_and_proxy_credentials(self):
+        import app.products.web.admin.register as register
+
+        masked = register._mask_settings(
+            {
+                "temp_mail_admin_password": "mail-secret",
+                "temp_mail_site_password": "site-secret",
+                "api_token": "api-secret",
+                "proxy": "http://user:pass@example.com:8080",
+                "browser_proxy": "socks5://user:pass@browser.example.com:1080",
+            }
+        )
+
+        self.assertEqual(masked["temp_mail_admin_password"], "ma***")
+        self.assertEqual(masked["temp_mail_site_password"], "si***")
+        self.assertEqual(masked["api_token"], "ap***")
+        self.assertEqual(masked["proxy"], "http://example.com:8080")
+        self.assertEqual(masked["browser_proxy"], "socks5://browser.example.com:1080")
 
     def test_write_and_read_settings_preserves_cloudmail_domain_arrays(self):
         import app.products.web.admin.register as register
@@ -307,6 +353,48 @@ class RegisterConsoleHelperTests(unittest.TestCase):
         conn.close()
 
         self.assertEqual(result["config"]["temp_mail_domain"], ["one.example.com", "two.example.com"])
+
+    def test_serialize_task_masks_sensitive_config_values(self):
+        import app.products.web.admin.register as register
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "register"
+            task_dir = root / "tasks" / "task_1"
+            console_path = task_dir / "console.log"
+            with patch.object(register, "REGISTER_ROOT", root), patch.object(register, "TASKS_DIR", root / "tasks"), patch.object(register, "DB_PATH", root / "console.db"):
+                register.init_db()
+                task_id = register.execute(
+                    """
+                    INSERT INTO tasks (
+                        name, status, target_count, config_json, task_dir, console_path, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "batch",
+                        register.STATUS_QUEUED,
+                        1,
+                        json.dumps(
+                            {
+                                "temp_mail_admin_password": "mail-secret",
+                                "temp_mail_site_password": "site-secret",
+                                "api_token": "api-secret",
+                                "api": {"token": "nested-secret", "endpoint": "http://example.com"},
+                                "proxy": "http://user:pass@example.com:8080",
+                            }
+                        ),
+                        str(task_dir),
+                        str(console_path),
+                        register.now_iso(),
+                    ),
+                )
+                serialized = register.serialize_task(register.task_row(task_id))
+
+        config = serialized["config"]
+        self.assertEqual(config["temp_mail_admin_password"], "ma***")
+        self.assertEqual(config["temp_mail_site_password"], "si***")
+        self.assertEqual(config["api_token"], "ap***")
+        self.assertEqual(config["api"]["token"], "ne***")
+        self.assertEqual(config["proxy"], "http://example.com:8080")
 
     def test_register_router_is_mounted_on_main_app(self):
         from app.main import app

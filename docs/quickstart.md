@@ -78,6 +78,8 @@ docker compose -f docker-compose.register.yml up -d --build
 cp config.example.json config.json
 ```
 
+`config.json` 是本地运行配置，可能包含邮箱密码、Token Sink Key 和代理凭据。它已经被 Git 忽略，不要提交。如果真实密码或 token 曾经被提交、粘贴到日志或分享给他人，请立即轮换。
+
 把下面这些替换成你自己的值：
 
 - `temp_mail_provider`
