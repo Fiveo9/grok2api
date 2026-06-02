@@ -163,11 +163,19 @@ def init_db() -> None:
 def load_source_defaults() -> dict[str, Any]:
     config_path = SOURCE_PROJECT / "config.json"
     if config_path.exists():
-        base = json.loads(config_path.read_text(encoding="utf-8"))
+        try:
+            base = json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(f"[register] 读取 config.json 失败: {exc}")
+            base = {}
     else:
         example_path = SOURCE_PROJECT / "config.example.json"
         if example_path.exists():
-            base = json.loads(example_path.read_text(encoding="utf-8"))
+            try:
+                base = json.loads(example_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning(f"[register] 读取 config.example.json 失败: {exc}")
+                base = {}
         else:
             base = {
                 "run": {"count": 50},
@@ -236,6 +244,12 @@ def _clean_domain_list(values: list[Any]) -> list[str]:
 
 def write_settings(settings: SystemSettings) -> dict[str, Any]:
     data = settings.model_dump()
+    # Preserve existing sensitive values when frontend sends empty strings
+    sensitive_keys = ("temp_mail_admin_password", "temp_mail_site_password", "api_token")
+    existing = read_settings()
+    for key in sensitive_keys:
+        if not data.get(key) and existing.get(key):
+            data[key] = existing[key]
     temp_mail_domain = data.get("temp_mail_domain")
     if isinstance(temp_mail_domain, list):
         data["temp_mail_domain"] = _clean_domain_list(temp_mail_domain)
@@ -312,7 +326,27 @@ def build_task_config(payload: TaskCreate) -> dict[str, Any]:
     return build_task_config_from_defaults(merged_defaults(), payload)
 
 
+def _mask_sensitive_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Mask sensitive fields in task config before returning to frontend."""
+    masked = dict(config)
+    for key in ("api_token", "temp_mail_admin_password", "temp_mail_site_password"):
+        if key in masked and masked[key]:
+            val = str(masked[key])
+            masked[key] = val[:2] + "***" if len(val) > 2 else "***"
+    for key in ("proxy", "browser_proxy"):
+        if key in masked and masked[key]:
+            masked[key] = _mask_proxy(masked[key])
+    if "api" in masked and isinstance(masked["api"], dict):
+        api = dict(masked["api"])
+        if api.get("token"):
+            val = str(api["token"])
+            api["token"] = val[:2] + "***" if len(val) > 2 else "***"
+        masked["api"] = api
+    return masked
+
+
 def serialize_task(row: sqlite3.Row) -> dict[str, Any]:
+    config = json.loads(row["config_json"])
     return {
         "id": int(row["id"]),
         "name": row["name"],
@@ -326,7 +360,7 @@ def serialize_task(row: sqlite3.Row) -> dict[str, Any]:
         "last_error": row["last_error"] or "",
         "last_log_at": row["last_log_at"] or "",
         "notes": row["notes"] or "",
-        "config": json.loads(row["config_json"]),
+        "config": _mask_sensitive_config(config),
         "created_at": row["created_at"],
         "started_at": row["started_at"],
         "finished_at": row["finished_at"],
@@ -335,11 +369,29 @@ def serialize_task(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _tail_read(path: Path, max_bytes: int = 512 * 1024) -> str:
+    """Read the tail of a file efficiently, avoiding loading the entire file."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    if size <= max_bytes:
+        return path.read_text(encoding="utf-8", errors="replace")
+    with path.open("rb") as f:
+        f.seek(-max_bytes, 2)
+        raw = f.read()
+    # Skip partial first line
+    nl = raw.find(b"\n")
+    if nl != -1:
+        raw = raw[nl + 1:]
+    return raw.decode("utf-8", errors="replace")
+
+
 def read_log_lines(path: Path, limit: int = 200) -> list[str]:
     if not path.exists():
         return []
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    return lines[-limit:]
+    text = _tail_read(path)
+    return text.splitlines()[-limit:]
 
 
 def parse_console_state(console_path: Path) -> dict[str, Any]:
@@ -355,7 +407,7 @@ def parse_console_state(console_path: Path) -> dict[str, Any]:
     if not console_path.exists():
         return state
 
-    lines = console_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    lines = _tail_read(console_path, max_bytes=2 * 1024 * 1024).splitlines()
     for raw_line in lines:
         line = raw_line.strip()
         if not line:
@@ -430,12 +482,15 @@ def copy_source_to_task_dir(task_dir: Path, task_config: dict[str, Any]) -> None
 
 
 def _mask_proxy(proxy_url: str) -> str:
-    parsed = urlparse(proxy_url)
-    if not parsed.scheme or not parsed.netloc:
-        return proxy_url
-    host = parsed.hostname or ""
-    port = f":{parsed.port}" if parsed.port else ""
-    return f"{parsed.scheme}://{host}{port}"
+    try:
+        parsed = urlparse(proxy_url)
+        if not parsed.scheme or not parsed.netloc:
+            return proxy_url
+        host = parsed.hostname or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{host}{port}"
+    except (ValueError, TypeError):
+        return "***"
 
 
 def _request_with_optional_proxy(
@@ -579,7 +634,7 @@ class TaskSupervisor:
             managed = self._processes.get(task_id)
         if not managed:
             row = task_row(task_id)
-            if row["status"] == STATUS_QUEUED:
+            if row["status"] in (STATUS_QUEUED, "starting"):
                 execute_no_return(
                     """
                     UPDATE tasks
@@ -606,25 +661,39 @@ class TaskSupervisor:
             try:
                 self._refresh_running()
                 self._launch_queued()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.error(f"[register] supervisor 循环异常: {exc}")
             self._stop.wait(SUPERVISOR_INTERVAL)
 
     def _launch_queued(self) -> None:
         slots = MAX_CONCURRENT_TASKS - self._running_count()
         if slots <= 0:
             return
-        queued = fetch_all(
-            "SELECT * FROM tasks WHERE status = ? ORDER BY id ASC LIMIT ?",
+        # Atomically claim queued tasks by setting status to 'starting'
+        # This prevents race condition with stop_task() changing status concurrently
+        execute_no_return(
+            "UPDATE tasks SET status = 'starting' WHERE id IN (SELECT id FROM tasks WHERE status = ? ORDER BY id ASC LIMIT ?)",
             (STATUS_QUEUED, slots),
         )
-        for row in queued:
+        starting = fetch_all(
+            "SELECT * FROM tasks WHERE status = 'starting' ORDER BY id ASC",
+        )
+        for row in starting:
             if self._stop.is_set():
+                # Revert unprocessed starting tasks back to queued
+                execute_no_return(
+                    "UPDATE tasks SET status = ? WHERE id = ? AND status = 'starting'",
+                    (STATUS_QUEUED, int(row["id"])),
+                )
                 return
             self._start_task(row)
 
     def _start_task(self, row: sqlite3.Row) -> None:
         task_id = int(row["id"])
+        # Verify task is still in 'starting' status (could have been stopped concurrently)
+        current = fetch_one("SELECT status FROM tasks WHERE id = ?", (task_id,))
+        if not current or current["status"] != "starting":
+            return
         task_dir = Path(row["task_dir"])
         console_path = Path(row["console_path"])
         try:
@@ -814,7 +883,25 @@ supervisor = TaskSupervisor()
 
 def start_register_supervisor() -> None:
     init_db()
+    _cleanup_orphaned_tasks()
     supervisor.start()
+
+
+def _cleanup_orphaned_tasks() -> None:
+    """Mark running/stopping tasks as failed on startup (server restarted)."""
+    try:
+        rows = fetch_all(
+            "SELECT id, name FROM tasks WHERE status IN ('running', 'stopping')"
+        )
+        if rows:
+            execute_no_return(
+                "UPDATE tasks SET status = 'failed', last_error = ?, finished_at = ? WHERE status IN ('running', 'stopping')",
+                ("服务重启，任务被中断", now_iso()),
+            )
+            for row in rows:
+                logger.warning(f"[register] 清理孤儿任务: id={row['id']} name={row['name']}")
+    except Exception as exc:
+        logger.error(f"[register] 清理孤儿任务失败: {exc}")
 
 
 def stop_register_supervisor() -> None:
@@ -824,11 +911,24 @@ def stop_register_supervisor() -> None:
 router = APIRouter(prefix="/register", tags=["Admin - Register"])
 
 
+def _mask_settings(data: dict[str, Any]) -> dict[str, Any]:
+    """Mask sensitive fields in settings before returning to frontend."""
+    masked = dict(data)
+    for key in ("temp_mail_admin_password", "temp_mail_site_password", "api_token"):
+        if key in masked and masked[key]:
+            val = str(masked[key])
+            masked[key] = val[:2] + "***" if len(val) > 2 else "***"
+    for key in ("proxy", "browser_proxy"):
+        if key in masked and masked[key]:
+            masked[key] = _mask_proxy(masked[key])
+    return masked
+
+
 @router.get("/meta")
 def api_meta() -> dict[str, Any]:
     return {
-        "defaults": merged_defaults(),
-        "settings": read_settings(),
+        "defaults": _mask_settings(merged_defaults()),
+        "settings": _mask_settings(read_settings()),
         "source_project": str(SOURCE_PROJECT),
         "python_path": str(SOURCE_VENV_PYTHON),
         "max_concurrent_tasks": MAX_CONCURRENT_TASKS,
@@ -842,13 +942,13 @@ def api_health() -> dict[str, Any]:
 
 @router.get("/settings")
 def get_settings() -> dict[str, Any]:
-    return {"settings": read_settings(), "defaults": merged_defaults()}
+    return {"settings": _mask_settings(read_settings()), "defaults": _mask_settings(merged_defaults())}
 
 
 @router.post("/settings")
 def save_settings(payload: SystemSettings) -> dict[str, Any]:
     saved = write_settings(payload)
-    return {"settings": saved, "defaults": merged_defaults()}
+    return {"settings": _mask_settings(saved), "defaults": _mask_settings(merged_defaults())}
 
 
 @router.get("/tasks")
@@ -918,7 +1018,7 @@ def stop_task(task_id: int) -> dict[str, Any]:
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: int) -> dict[str, Any]:
     row = task_row(task_id)
-    if row["status"] in {STATUS_RUNNING, STATUS_STOPPING}:
+    if row["status"] in {STATUS_RUNNING, STATUS_STOPPING, "starting"}:
         raise HTTPException(status_code=409, detail="Task is still running")
     delete_task_files(row)
     execute_no_return("DELETE FROM tasks WHERE id = ?", (task_id,))

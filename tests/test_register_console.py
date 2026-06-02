@@ -473,7 +473,7 @@ class RegisterConsoleHelperTests(unittest.TestCase):
                     """,
                     (
                         "batch",
-                        register.STATUS_QUEUED,
+                        "starting",
                         1,
                         json.dumps({"run": {"count": 1}}),
                         str(task_dir),
@@ -516,7 +516,7 @@ class RegisterConsoleHelperTests(unittest.TestCase):
                     """,
                     (
                         "batch",
-                        register.STATUS_QUEUED,
+                        "starting",
                         1,
                         json.dumps({"run": {"count": 1}}),
                         str(task_dir),

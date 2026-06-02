@@ -3,7 +3,7 @@
 
   const API = '/admin/api/register';
   const POLL_MS = 5000;
-  const terminalStatuses = new Set(['completed', 'failed', 'stopped', 'partial']);
+  const terminalStatuses = new Set(['completed', 'failed', 'stopped', 'partial', 'queued']);
   let adminKeyValue = '';
   let pollTimer = null;
   let pollingActive = false;
@@ -92,11 +92,11 @@
       ]),
       inputField('temp_mail_api_base', '邮箱 API', fieldValue(settings, 'temp_mail_api_base', currentDefaults.temp_mail_api_base), 'https://example.com'),
       inputField('temp_mail_admin_email', '邮箱管理员', fieldValue(settings, 'temp_mail_admin_email', currentDefaults.temp_mail_admin_email), 'admin@example.com'),
-      inputField('temp_mail_admin_password', '邮箱密码', fieldValue(settings, 'temp_mail_admin_password', currentDefaults.temp_mail_admin_password), '', 'password'),
+      inputField('temp_mail_admin_password', '邮箱密码', '', '已有值则留空不修改', 'password'),
       renderTempMailDomainField(provider, domainValue),
-      inputField('temp_mail_site_password', '站点密码', fieldValue(settings, 'temp_mail_site_password', currentDefaults.temp_mail_site_password), '', 'password'),
+      inputField('temp_mail_site_password', '站点密码', '', '已有值则留空不修改', 'password'),
       inputField('api_endpoint', 'Token Sink', fieldValue(settings, 'api_endpoint', apiDefaults.endpoint), 'http://127.0.0.1:8000/admin/api/tokens', 'text', true),
-      inputField('api_token', 'Token Sink Key', fieldValue(settings, 'api_token', apiDefaults.token), '', 'password'),
+      inputField('api_token', 'Token Sink Key', '', '已有值则留空不修改', 'password'),
       checkboxField('api_append', '追加写入 token', fieldValue(settings, 'api_append', apiDefaults.append ?? true)),
       '<div class="form-field wide"><button type="submit" class="page-action-btn page-action-btn-primary">保存默认设置</button></div>',
     ].join('');
