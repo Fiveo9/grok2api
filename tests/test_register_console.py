@@ -98,6 +98,11 @@ class RegisterConsoleHelperTests(unittest.TestCase):
         self.assertEqual(masked["proxy"], "http://example.com:8080")
         self.assertEqual(masked["browser_proxy"], "socks5://browser.example.com:1080")
 
+    def test_register_defines_starting_status_constant(self):
+        import app.products.web.admin.register as register
+
+        self.assertEqual(register.STATUS_STARTING, "starting")
+
     def test_write_and_read_settings_preserves_cloudmail_domain_arrays(self):
         import app.products.web.admin.register as register
 
@@ -296,6 +301,17 @@ class RegisterConsoleHelperTests(unittest.TestCase):
         self.assertEqual(state["last_error"], "blocked")
         self.assertEqual(state["current_phase"], "pushed_to_api")
 
+    def test_tail_read_skips_partial_first_line_for_large_files(self):
+        from app.products.web.admin.register import _tail_read
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "console.log"
+            log_path.write_text("prefix-line-that-should-be-cut\ncomplete-one\ncomplete-two\n", encoding="utf-8")
+
+            text = _tail_read(log_path, max_bytes=len("should-be-cut\ncomplete-one\ncomplete-two\n"))
+
+        self.assertEqual(text.splitlines(), ["complete-one", "complete-two"])
+
     def test_serialize_task_decodes_config_json(self):
         from app.products.web.admin.register import serialize_task
 
@@ -466,6 +482,22 @@ class RegisterConsoleHelperTests(unittest.TestCase):
         self.assertIn(".join('<br>')", js)
         self.assertNotIn("if (Array.isArray(value)) {", js)
 
+    def test_register_admin_js_handles_starting_status_and_actions(self):
+        js = (Path(__file__).parents[1] / "app" / "statics" / "js" / "admin-register.js").read_text(encoding="utf-8")
+
+        self.assertIn("starting: '启动中'", js)
+        self.assertIn("const stoppableStatuses = new Set(['queued', 'starting', 'running']);", js)
+        self.assertIn("const terminalStatuses = new Set(['completed', 'failed', 'stopped', 'partial']);", js)
+        self.assertIn("queued: '等待调度'", js)
+        self.assertIn("starting: '准备启动'", js)
+
+    def test_register_admin_js_has_clearer_action_error_context(self):
+        js = (Path(__file__).parents[1] / "app" / "statics" / "js" / "admin-register.js").read_text(encoding="utf-8")
+
+        self.assertIn("const actionLabel", js)
+        self.assertIn("任务 #${taskId}", js)
+        self.assertIn("操作失败", js)
+
     def test_task_supervisor_start_stop_are_idempotent(self):
         import app.products.web.admin.register as register
 
@@ -536,6 +568,134 @@ class RegisterConsoleHelperTests(unittest.TestCase):
         self.assertTrue(log_handle.closed)
         process.terminate.assert_called_once()
 
+    def test_launch_queued_only_starts_newly_claimed_tasks(self):
+        import app.products.web.admin.register as register
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "register"
+            with (
+                patch.object(register, "REGISTER_ROOT", root),
+                patch.object(register, "TASKS_DIR", root / "tasks"),
+                patch.object(register, "DB_PATH", root / "console.db"),
+                patch.object(register, "MAX_CONCURRENT_TASKS", 1),
+            ):
+                register.init_db()
+                old_starting_id = register.execute(
+                    """
+                    INSERT INTO tasks (
+                        name, status, target_count, config_json, task_dir, console_path, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "old-starting",
+                        register.STATUS_STARTING,
+                        1,
+                        json.dumps({"run": {"count": 1}}),
+                        str(root / "tasks" / "task_old"),
+                        str(root / "tasks" / "task_old" / "console.log"),
+                        register.now_iso(),
+                    ),
+                )
+                queued_id = register.execute(
+                    """
+                    INSERT INTO tasks (
+                        name, status, target_count, config_json, task_dir, console_path, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "queued",
+                        register.STATUS_QUEUED,
+                        1,
+                        json.dumps({"run": {"count": 1}}),
+                        str(root / "tasks" / "task_new"),
+                        str(root / "tasks" / "task_new" / "console.log"),
+                        register.now_iso(),
+                    ),
+                )
+
+                started: list[int] = []
+                supervisor = register.TaskSupervisor()
+                with patch.object(supervisor, "_start_task", side_effect=lambda row: started.append(int(row["id"]))):
+                    supervisor._launch_queued()
+
+        self.assertEqual(started, [queued_id])
+        self.assertNotIn(old_starting_id, started)
+
+    def test_cleanup_orphaned_tasks_marks_starting_running_and_stopping_failed(self):
+        import app.products.web.admin.register as register
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "register"
+            with patch.object(register, "REGISTER_ROOT", root), patch.object(register, "TASKS_DIR", root / "tasks"), patch.object(register, "DB_PATH", root / "console.db"):
+                register.init_db()
+                for status in (register.STATUS_STARTING, register.STATUS_RUNNING, register.STATUS_STOPPING):
+                    register.execute(
+                        """
+                        INSERT INTO tasks (
+                            name, status, target_count, config_json, task_dir, console_path, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"task-{status}",
+                            status,
+                            1,
+                            json.dumps({"run": {"count": 1}}),
+                            str(root / "tasks" / status),
+                            str(root / "tasks" / status / "console.log"),
+                            register.now_iso(),
+                        ),
+                    )
+
+                register._cleanup_orphaned_tasks()
+                rows = register.fetch_all("SELECT status, last_error, finished_at FROM tasks ORDER BY id")
+
+        self.assertEqual([row["status"] for row in rows], [register.STATUS_FAILED, register.STATUS_FAILED, register.STATUS_FAILED])
+        self.assertTrue(all("服务重启" in row["last_error"] for row in rows))
+        self.assertTrue(all(row["finished_at"] for row in rows))
+
+    def test_refresh_running_removes_missing_task_row_without_crashing(self):
+        import app.products.web.admin.register as register
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "register"
+            task_dir = root / "tasks" / "task_1"
+            console_path = task_dir / "console.log"
+            task_dir.mkdir(parents=True)
+            log_handle = console_path.open("a", encoding="utf-8")
+            process = Mock(pid=4321)
+            process.poll.return_value = None
+            process.wait.return_value = 0
+
+            with patch.object(register, "REGISTER_ROOT", root), patch.object(register, "TASKS_DIR", root / "tasks"), patch.object(register, "DB_PATH", root / "console.db"):
+                register.init_db()
+                task_id = register.execute(
+                    """
+                    INSERT INTO tasks (
+                        name, status, target_count, config_json, task_dir, console_path, pid, created_at, started_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "batch",
+                        register.STATUS_RUNNING,
+                        1,
+                        json.dumps({"run": {"count": 1}}),
+                        str(task_dir),
+                        str(console_path),
+                        4321,
+                        register.now_iso(),
+                        register.now_iso(),
+                    ),
+                )
+                supervisor = register.TaskSupervisor()
+                supervisor._processes[task_id] = register.ManagedProcess(task_id, process, log_handle)
+                register.execute_no_return("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+                supervisor._refresh_running()
+
+        self.assertEqual(supervisor._processes, {})
+        self.assertTrue(log_handle.closed)
+        process.terminate.assert_called_once()
+
     def test_start_task_marks_failed_when_popen_fails(self):
         import app.products.web.admin.register as register
 
@@ -561,7 +721,7 @@ class RegisterConsoleHelperTests(unittest.TestCase):
                     """,
                     (
                         "batch",
-                        "starting",
+                        register.STATUS_STARTING,
                         1,
                         json.dumps({"run": {"count": 1}}),
                         str(task_dir),
@@ -604,7 +764,7 @@ class RegisterConsoleHelperTests(unittest.TestCase):
                     """,
                     (
                         "batch",
-                        "starting",
+                        register.STATUS_STARTING,
                         1,
                         json.dumps({"run": {"count": 1}}),
                         str(task_dir),

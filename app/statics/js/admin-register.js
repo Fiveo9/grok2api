@@ -3,7 +3,8 @@
 
   const API = '/admin/api/register';
   const POLL_MS = 5000;
-  const terminalStatuses = new Set(['completed', 'failed', 'stopped', 'partial', 'queued']);
+  const terminalStatuses = new Set(['completed', 'failed', 'stopped', 'partial']);
+  const stoppableStatuses = new Set(['queued', 'starting', 'running']);
   let adminKeyValue = '';
   let pollTimer = null;
   let pollingActive = false;
@@ -54,6 +55,7 @@
 
   const statusLabel = (status) => ({
     queued: '排队中',
+    starting: '启动中',
     running: '运行中',
     stopping: '停止中',
     completed: '已完成',
@@ -63,6 +65,11 @@
   }[status] || status || '-');
 
   const statusClass = (status) => `status-badge status-${String(status || '').replace(/[^a-z0-9_-]/gi, '')}`;
+
+  const phaseFallback = (status) => ({
+    queued: '等待调度',
+    starting: '准备启动',
+  }[status] || '');
 
   const fieldValue = (data, key, fallback = '') => data?.[key] ?? fallback ?? '';
 
@@ -109,11 +116,11 @@
     const count = currentDefaults?.run?.count || 50;
     form.innerHTML = [
       inputField('name', '任务名称', `register-${new Date().toISOString().slice(0, 10)}`, 'register-batch'),
-      inputField('count', '注册数量', count, '50', 'number'),
-      inputField('proxy', '覆盖请求代理', '', '留空使用默认值'),
-      inputField('browser_proxy', '覆盖浏览器代理', '', '留空使用默认值'),
-      inputField('temp_mail_domain', '覆盖邮箱域名', '', '留空使用默认值'),
-      inputField('api_token', '覆盖 Sink Key', '', '留空使用默认值', 'password'),
+      inputField('count', '注册数量', count, '例如 50', 'number'),
+      inputField('proxy', '覆盖请求代理', '', '留空沿用系统默认值'),
+      inputField('browser_proxy', '覆盖浏览器代理', '', '留空沿用系统默认值'),
+      inputField('temp_mail_domain', '覆盖邮箱域名', '', '留空沿用系统默认值'),
+      inputField('api_token', '覆盖 Sink Key', '', '留空沿用系统默认值', 'password'),
       checkboxField('api_append', '追加写入 token', true),
       '<div class="form-field wide"><label for="create-notes">备注</label><textarea id="create-notes" name="notes" placeholder="可选"></textarea></div>',
       '<div class="form-field wide"><button type="submit" class="page-action-btn page-action-btn-primary">创建任务</button></div>',
@@ -223,11 +230,11 @@
     list.innerHTML = tasks.map((task) => {
       const progress = `${task.completed_count || 0}/${task.target_count || 0}`;
       const failures = task.failed_count ? `，失败 ${task.failed_count}` : '';
-      const canStop = ['queued', 'running', 'stopping'].includes(task.status);
+      const canStop = stoppableStatuses.has(task.status);
       const canDelete = terminalStatuses.has(task.status);
       return `
         <tr data-task-id="${esc(task.id)}">
-          <td><div class="task-name">${esc(task.name)}</div><div class="task-sub">#${esc(task.id)} ${esc(task.current_phase || '')}</div></td>
+          <td><div class="task-name">${esc(task.name)}</div><div class="task-sub">#${esc(task.id)} ${esc(task.current_phase || phaseFallback(task.status))}</div></td>
           <td><span class="${esc(statusClass(task.status))}">${esc(statusLabel(task.status))}</span></td>
           <td>${esc(progress)}${esc(failures)}</td>
           <td>${esc(text(task.last_email))}</td>
@@ -323,6 +330,12 @@
     const row = event.target.closest('tr[data-task-id]');
     if (!button || !row || button.disabled) return;
     const taskId = Number(row.dataset.taskId);
+    const actionLabel = {
+      detail: '查看详情',
+      logs: '查看日志',
+      stop: '停止任务',
+      delete: '删除任务',
+    }[button.dataset.action] || '执行操作';
     try {
       if (button.dataset.action === 'detail') await loadDetail(taskId, false);
       if (button.dataset.action === 'logs') await loadDetail(taskId, true);
@@ -341,7 +354,7 @@
       }
     } catch (error) {
       const box = $('register-task-logs');
-      if (box) box.textContent = `操作失败：${error.message}`;
+      if (box) box.textContent = `任务 #${taskId} ${actionLabel}操作失败：${error.message}`;
     }
   };
 

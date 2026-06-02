@@ -19,6 +19,7 @@ import requests
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.platform.logging.logger import logger
 from app.platform.paths import data_path
 
 
@@ -37,6 +38,7 @@ PROJECT_FILES = ("DrissionPage_example.py", "email_register.py")
 PROJECT_DIRS = ("turnstilePatch",)
 
 STATUS_QUEUED = "queued"
+STATUS_STARTING = "starting"
 STATUS_RUNNING = "running"
 STATUS_STOPPING = "stopping"
 STATUS_COMPLETED = "completed"
@@ -634,17 +636,18 @@ class TaskSupervisor:
             managed = self._processes.get(task_id)
         if not managed:
             row = task_row(task_id)
-            if row["status"] in (STATUS_QUEUED, "starting"):
+            if row["status"] in (STATUS_QUEUED, STATUS_STARTING):
+                message = "Task stopped before launch." if row["status"] == STATUS_QUEUED else "Task stopped while starting."
                 execute_no_return(
                     """
                     UPDATE tasks
-                    SET status = ?, finished_at = ?, last_error = ?
+                    SET status = ?, finished_at = ?, last_error = ?, current_phase = ?, pid = NULL
                     WHERE id = ?
                     """,
-                    (STATUS_STOPPED, now_iso(), "Task stopped before launch.", task_id),
+                    (STATUS_STOPPED, now_iso(), message, STATUS_STOPPED, task_id),
                 )
                 return
-            raise HTTPException(status_code=409, detail="Task is not running")
+            raise HTTPException(status_code=409, detail=f"Task is not stoppable in status '{row['status']}'")
 
         execute_no_return(
             "UPDATE tasks SET status = ?, last_error = ?, current_phase = ? WHERE id = ?",
@@ -671,19 +674,30 @@ class TaskSupervisor:
             return
         # Atomically claim queued tasks by setting status to 'starting'
         # This prevents race condition with stop_task() changing status concurrently
-        execute_no_return(
-            "UPDATE tasks SET status = 'starting' WHERE id IN (SELECT id FROM tasks WHERE status = ? ORDER BY id ASC LIMIT ?)",
-            (STATUS_QUEUED, slots),
-        )
-        starting = fetch_all(
-            "SELECT * FROM tasks WHERE status = 'starting' ORDER BY id ASC",
-        )
+        with db_lock, closing(get_conn()) as conn:
+            claimed = conn.execute(
+                "SELECT id FROM tasks WHERE status = ? ORDER BY id ASC LIMIT ?",
+                (STATUS_QUEUED, slots),
+            ).fetchall()
+            claimed_ids = [int(row["id"]) for row in claimed]
+            if not claimed_ids:
+                return
+            placeholders = ",".join("?" for _ in claimed_ids)
+            conn.execute(
+                f"UPDATE tasks SET status = ? WHERE id IN ({placeholders}) AND status = ?",
+                (STATUS_STARTING, *claimed_ids, STATUS_QUEUED),
+            )
+            conn.commit()
+            starting = conn.execute(
+                f"SELECT * FROM tasks WHERE id IN ({placeholders}) AND status = ? ORDER BY id ASC",
+                (*claimed_ids, STATUS_STARTING),
+            ).fetchall()
         for row in starting:
             if self._stop.is_set():
                 # Revert unprocessed starting tasks back to queued
                 execute_no_return(
-                    "UPDATE tasks SET status = ? WHERE id = ? AND status = 'starting'",
-                    (STATUS_QUEUED, int(row["id"])),
+                    "UPDATE tasks SET status = ? WHERE id = ? AND status = ?",
+                    (STATUS_QUEUED, int(row["id"]), STATUS_STARTING),
                 )
                 return
             self._start_task(row)
@@ -692,7 +706,7 @@ class TaskSupervisor:
         task_id = int(row["id"])
         # Verify task is still in 'starting' status (could have been stopped concurrently)
         current = fetch_one("SELECT status FROM tasks WHERE id = ?", (task_id,))
-        if not current or current["status"] != "starting":
+        if not current or current["status"] != STATUS_STARTING:
             return
         task_dir = Path(row["task_dir"])
         console_path = Path(row["console_path"])
@@ -751,9 +765,30 @@ class TaskSupervisor:
         with self._lock:
             managed_items = list(self._processes.items())
         for task_id, managed in managed_items:
-            row = task_row(task_id)
+            try:
+                row = task_row(task_id)
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                self._terminate_process(managed)
+                self._close_managed(managed)
+                with self._lock:
+                    self._processes.pop(task_id, None)
+                logger.warning(f"[register] 移除缺失任务进程: id={task_id}")
+                continue
             console_path = Path(row["console_path"])
-            parsed = parse_console_state(console_path)
+            try:
+                parsed = parse_console_state(console_path)
+            except Exception as exc:
+                parsed = {
+                    "completed_count": int(row["completed_count"] or 0),
+                    "failed_count": int(row["failed_count"] or 0),
+                    "current_round": int(row["current_round"] or 0),
+                    "current_phase": row["current_phase"] or "log_parse_failed",
+                    "last_email": row["last_email"] or "",
+                    "last_error": f"日志解析失败: {exc}",
+                    "last_log_at": now_iso(),
+                }
             execute_no_return(
                 """
                 UPDATE tasks
@@ -891,12 +926,13 @@ def _cleanup_orphaned_tasks() -> None:
     """Mark running/stopping tasks as failed on startup (server restarted)."""
     try:
         rows = fetch_all(
-            "SELECT id, name FROM tasks WHERE status IN ('running', 'stopping')"
+            "SELECT id, name FROM tasks WHERE status IN (?, ?, ?)",
+            (STATUS_STARTING, STATUS_RUNNING, STATUS_STOPPING),
         )
         if rows:
             execute_no_return(
-                "UPDATE tasks SET status = 'failed', last_error = ?, finished_at = ? WHERE status IN ('running', 'stopping')",
-                ("服务重启，任务被中断", now_iso()),
+                "UPDATE tasks SET status = ?, last_error = ?, finished_at = ?, current_phase = ?, pid = NULL WHERE status IN (?, ?, ?)",
+                (STATUS_FAILED, "服务重启，任务被中断", now_iso(), "orphaned_after_restart", STATUS_STARTING, STATUS_RUNNING, STATUS_STOPPING),
             )
             for row in rows:
                 logger.warning(f"[register] 清理孤儿任务: id={row['id']} name={row['name']}")
@@ -1018,7 +1054,7 @@ def stop_task(task_id: int) -> dict[str, Any]:
 @router.delete("/tasks/{task_id}")
 def delete_task(task_id: int) -> dict[str, Any]:
     row = task_row(task_id)
-    if row["status"] in {STATUS_RUNNING, STATUS_STOPPING, "starting"}:
+    if row["status"] in {STATUS_RUNNING, STATUS_STOPPING, STATUS_STARTING}:
         raise HTTPException(status_code=409, detail="Task is still running")
     delete_task_files(row)
     execute_no_return("DELETE FROM tasks WHERE id = ?", (task_id,))
