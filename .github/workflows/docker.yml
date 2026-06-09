@@ -4,11 +4,22 @@ on:
   push:
     branches:
       - main
+      - 'feature/**'
     tags:
       - 'v*'
   pull_request:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push image to registry'
+        type: boolean
+        default: true
+      platforms:
+        description: 'Target platforms (comma-separated)'
+        type: string
+        default: 'linux/amd64,linux/arm64'
 
 env:
   REGISTRY: ghcr.io
@@ -24,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -33,7 +44,9 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Container Registry
-        if: github.event_name != 'pull_request'
+        if: >-
+          github.event_name != 'pull_request' &&
+          (github.event_name != 'workflow_dispatch' || inputs.push)
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -46,18 +59,35 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable=${{ github.ref_type == 'branch' }}
-            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=branch,suffix=-{{sha}},enable=${{ github.ref_type == 'branch' && github.ref != 'refs/heads/main' }}
+            type=ref,event=pr
             type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          platforms: ${{ inputs.platforms || 'linux/amd64,linux/arm64' }}
+          push: >-
+            ${{
+              github.event_name == 'workflow_dispatch' && inputs.push ||
+              (github.event_name != 'pull_request' && github.event_name != 'workflow_dispatch')
+            }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           pull: true
+
+      - name: Image digest
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "## 🐳 Docker Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
