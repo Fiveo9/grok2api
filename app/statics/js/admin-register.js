@@ -130,7 +130,7 @@
   const inputField = (name, label, value, placeholder = '', type = 'text', wide = false) => `
     <div class="form-field${wide ? ' wide' : ''}">
       <label for="register-${esc(name)}">${esc(label)}</label>
-      <input id="register-${esc(name)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" placeholder="${esc(placeholder)}">
+      <input id="register-${esc(name)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off">
     </div>`;
 
   const selectField = (name, label, value, options, wide = false) => {
