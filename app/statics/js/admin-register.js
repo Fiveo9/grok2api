@@ -13,6 +13,21 @@
   let currentDefaults = {};
   let cloudMailDomainDraft = '';
   let eventsBound = false;
+  let fieldCounter = 0;
+  const fieldNonce = Math.random().toString(36).slice(2, 10);
+  const payloadKeyByControlName = new Map();
+  const autofillSafePayloadKeys = new Set([
+    'temp_mail_admin_email',
+    'temp_mail_admin_password',
+    'temp_mail_domain',
+    'temp_mail_site_password',
+    'api_token',
+  ]);
+  const nonLoginSecretPayloadKeys = new Set([
+    'temp_mail_admin_password',
+    'temp_mail_site_password',
+    'api_token',
+  ]);
 
   const $ = (id) => document.getElementById(id);
   const esc = (value) => String(value ?? '')
@@ -73,11 +88,25 @@
 
   const fieldValue = (data, key, fallback = '') => data?.[key] ?? fallback ?? '';
 
+  const controlNameFor = (payloadKey) => {
+    if (!autofillSafePayloadKeys.has(payloadKey)) return payloadKey;
+    const controlName = `rcf_${fieldNonce}_${++fieldCounter}`;
+    payloadKeyByControlName.set(controlName, payloadKey);
+    return controlName;
+  };
+
+  const payloadKeyFor = (controlName) => payloadKeyByControlName.get(controlName) || controlName;
+
+  const payloadElement = (form, payloadKey, role = '') => Array.from(form.elements || []).find((element) => {
+    if (role && element.dataset?.registerRole === role) return true;
+    return element.name && payloadKeyFor(element.name) === payloadKey;
+  });
+
   const renderTempMailDomainField = (provider, value) => `
     <div id="register-temp-mail-domain-field">
       ${isCloudMailProvider(provider)
-        ? textareaField('temp_mail_domain', '邮箱域名', domainFieldValue(value), 'example.com')
-        : inputField('temp_mail_domain', '邮箱域名', domainFieldValue(value), 'example.com')}
+        ? textareaField('temp_mail_domain', '邮箱域名', domainFieldValue(value), 'example.com', false, { role: 'scope' })
+        : inputField('temp_mail_domain', '邮箱域名', domainFieldValue(value), 'example.com', 'text', false, { role: 'scope' })}
     </div>`;
 
   const renderSettingsForm = (settings = {}, defaults = {}) => {
@@ -98,7 +127,7 @@
         ['generic', 'generic'],
       ]),
       inputField('temp_mail_api_base', '邮箱 API', fieldValue(settings, 'temp_mail_api_base', currentDefaults.temp_mail_api_base), 'https://example.com'),
-      inputField('temp_mail_admin_email', '邮箱管理员', fieldValue(settings, 'temp_mail_admin_email', currentDefaults.temp_mail_admin_email), 'admin@example.com'),
+      inputField('temp_mail_admin_email', '邮箱管理员', fieldValue(settings, 'temp_mail_admin_email', currentDefaults.temp_mail_admin_email), 'admin@example.com', 'text', false, { role: 'contact' }),
       inputField('temp_mail_admin_password', '邮箱密码', '', '已有值则留空不修改', 'password'),
       renderTempMailDomainField(provider, domainValue),
       inputField('temp_mail_site_password', '站点密码', '', '已有值则留空不修改', 'password'),
@@ -119,7 +148,7 @@
       inputField('count', '注册数量', count, '例如 50', 'number'),
       inputField('proxy', '覆盖请求代理', '', '留空沿用系统默认值'),
       inputField('browser_proxy', '覆盖浏览器代理', '', '留空沿用系统默认值'),
-      inputField('temp_mail_domain', '覆盖邮箱域名', '', '留空沿用系统默认值'),
+      inputField('temp_mail_domain', '覆盖邮箱域名', '', '留空沿用系统默认值', 'text', false, { role: 'scope' }),
       inputField('api_token', '覆盖 Sink Key', '', '留空沿用系统默认值', 'password'),
       checkboxField('api_append', '追加写入 token', true),
       '<div class="form-field wide"><label for="create-notes">备注</label><textarea id="create-notes" name="notes" placeholder="可选"></textarea></div>',
@@ -127,11 +156,21 @@
     ].join('');
   };
 
-  const inputField = (name, label, value, placeholder = '', type = 'text', wide = false) => `
+  const inputField = (name, label, value, placeholder = '', type = 'text', wide = false, options = {}) => {
+    const controlName = controlNameFor(name);
+    const safeId = `register-${controlName}`;
+    const isAutofillSafe = autofillSafePayloadKeys.has(name);
+    const isNonLoginSecret = nonLoginSecretPayloadKeys.has(name);
+    const inputType = isNonLoginSecret ? 'text' : type;
+    const roleAttr = options.role ? ` data-register-role="${esc(options.role)}"` : '';
+    const safeAttrs = isAutofillSafe ? ' autocomplete="one-time-code" readonly data-unlock-on-focus="true"' : ' autocomplete="off"';
+    const secretAttrs = isNonLoginSecret ? ' data-secret-field="true" style="-webkit-text-security:disc"' : '';
+    return `
     <div class="form-field${wide ? ' wide' : ''}">
-      <label for="register-${esc(name)}">${esc(label)}</label>
-      <input id="register-${esc(name)}" name="${esc(name)}" type="${esc(type)}" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off">
+      <label for="${esc(safeId)}">${esc(label)}</label>
+      <input id="${esc(safeId)}" name="${esc(controlName)}" type="${esc(inputType)}" value="${esc(value)}" placeholder="${esc(placeholder)}"${safeAttrs}${roleAttr}${secretAttrs}>
     </div>`;
+  };
 
   const selectField = (name, label, value, options, wide = false) => {
     const stringValue = String(value ?? '');
@@ -145,11 +184,18 @@
     </div>`;
   };
 
-  const textareaField = (name, label, value, placeholder = '', wide = false) => `
+  const textareaField = (name, label, value, placeholder = '', wide = false, options = {}) => {
+    const controlName = controlNameFor(name);
+    const safeId = `register-${controlName}`;
+    const isAutofillSafe = autofillSafePayloadKeys.has(name);
+    const roleAttr = options.role ? ` data-register-role="${esc(options.role)}"` : '';
+    const safeAttrs = isAutofillSafe ? ' autocomplete="one-time-code" readonly data-unlock-on-focus="true"' : '';
+    return `
     <div class="form-field${wide ? ' wide' : ''}">
-      <label for="register-${esc(name)}">${esc(label)}</label>
-      <textarea id="register-${esc(name)}" name="${esc(name)}" placeholder="${esc(placeholder)}">${esc(value)}</textarea>
+      <label for="${esc(safeId)}">${esc(label)}</label>
+      <textarea id="${esc(safeId)}" name="${esc(controlName)}" placeholder="${esc(placeholder)}"${safeAttrs}${roleAttr}>${esc(value)}</textarea>
     </div>`;
+  };
 
   const checkboxField = (name, label, checked) => `
     <div class="form-field">
@@ -161,9 +207,10 @@
     const data = new FormData(form);
     const payload = {};
     for (const [key, value] of data.entries()) {
-      if (key === 'api_append') continue;
+      const payloadKey = payloadKeyFor(key);
+      if (payloadKey === 'api_append') continue;
       const trimmed = String(value).trim();
-      if (includeEmpty || trimmed) payload[key] = trimmed;
+      if (includeEmpty || trimmed) payload[payloadKey] = trimmed;
     }
     if (form.elements.count) payload.count = Math.max(1, Number(payload.count || 1));
     payload.api_append = Boolean(form.elements.api_append?.checked);
@@ -369,7 +416,7 @@
       if (event.target?.name !== 'temp_mail_provider' || event.target.form?.id !== 'register-settings-form') return;
       const form = event.target.form;
       const previousProvider = form.dataset.tempMailProvider || '';
-      const domainField = form.elements.temp_mail_domain;
+      const domainField = payloadElement(form, 'temp_mail_domain', 'scope');
       const domainWrap = $('register-temp-mail-domain-field');
       if (!domainWrap) return;
       const currentDomainValue = domainField?.value || '';
@@ -385,10 +432,13 @@
       form.dataset.tempMailProvider = String(nextProvider || '');
     });
     document.addEventListener('input', (event) => {
-      if (event.target?.name === 'temp_mail_domain' && event.target.form?.id === 'register-settings-form') {
-        const provider = event.target.form.dataset.tempMailProvider || event.target.form.elements.temp_mail_provider?.value || '';
+      if (event.target?.dataset?.registerRole === 'scope' && event.target.form?.id === 'register-settings-form') {
+        const provider = event.target.form.dataset.tempMailProvider || payloadElement(event.target.form, 'temp_mail_provider')?.value || '';
         if (isCloudMailProvider(provider)) cloudMailDomainDraft = event.target.value || '';
       }
+    });
+    document.addEventListener('focusin', (event) => {
+      if (event.target?.dataset?.unlockOnFocus === 'true') event.target.removeAttribute('readonly');
     });
     $('register-task-list')?.addEventListener('click', handleTaskAction);
     $('register-refresh-health')?.addEventListener('click', () => loadHealth().catch(showError));
