@@ -1,5 +1,5 @@
 # ── Builder ───────────────────────────────────────────────────────────────────
-FROM python:3.13-alpine AS builder
+FROM python:3.13-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,17 +7,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 ENV PATH="$UV_PROJECT_ENVIRONMENT/bin:$PATH"
 
-# Rust/Cargo are required to compile curl-cffi wheels on musl/Alpine.
-# If upstream ever ships musl wheels, remove cargo + rust to speed up builds.
-RUN apk add --no-cache \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
     ca-certificates \
-    build-base \
-    linux-headers \
+    build-essential \
     libffi-dev \
-    openssl-dev \
-    curl-dev \
-    cargo \
-    rust
+    libssl-dev \
+    curl \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -32,11 +30,11 @@ RUN uv sync --frozen --no-dev --no-install-project \
          \( -name "__pycache__" -o -name "tests" -o -name "test" -o -name "testing" \) \
          -prune -exec rm -rf {} + \
     && find /opt/venv -type f -name "*.pyc" -delete \
-    && find /opt/venv -type f -name "*.so" -exec strip --strip-unneeded {} + 2>/dev/null; true \
+    && (find /opt/venv -type f -name "*.so" -exec strip --strip-unneeded {} + 2>/dev/null || true) \
     && rm -rf /root/.cache /tmp/uv-cache
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
-FROM python:3.13-alpine
+FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -48,14 +46,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-RUN apk add --no-cache \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
     tzdata \
     ca-certificates \
-    libffi \
     openssl \
-    libgcc \
-    libstdc++ \
-    libcurl
+    wget \
+    xvfb \
+    chromium \
+    chromium-driver \
+    fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -64,6 +65,8 @@ COPY --from=builder /opt/venv /opt/venv
 COPY pyproject.toml config.defaults.toml ./
 COPY app ./app
 COPY scripts ./scripts
+COPY DrissionPage_example.py email_register.py ./
+COPY turnstilePatch ./turnstilePatch
 
 RUN mkdir -p /app/data /app/logs \
     && chmod +x /app/scripts/entrypoint.sh /app/scripts/init_storage.sh

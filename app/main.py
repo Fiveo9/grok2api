@@ -31,6 +31,7 @@ from app.platform.errors import AppError
 from app.platform.meta import get_project_version
 from app.platform.paths import data_path
 from app.platform.storage import reconcile_local_media_cache_async
+from app.products.web.admin.register import start_register_supervisor, stop_register_supervisor
 
 
 load_dotenv()
@@ -240,8 +241,11 @@ async def lifespan(app: FastAPI):
 
     proxy_dir = await get_proxy_directory()
     proxy_scheduler = ProxyClearanceScheduler(proxy_dir)
+    register_supervisor_started = False
     if is_leader:
         proxy_scheduler.start()
+        start_register_supervisor()
+        register_supervisor_started = True
 
     # 6. Console 配额窗口自动重置任务（轻量巡检，每30秒扫描一次过期窗口）
     _CONSOLE_RESET_INTERVAL = 30  # 秒
@@ -272,6 +276,10 @@ async def lifespan(app: FastAPI):
         await console_reset_task
     except asyncio.CancelledError:
         pass
+
+    if register_supervisor_started:
+        stop_register_supervisor()
+
     sync_task.cancel()
     try:
         await sync_task

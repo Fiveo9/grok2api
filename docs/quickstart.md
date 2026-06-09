@@ -14,7 +14,7 @@
 
 其中：
 
-- `warp`、`privoxy`、`flaresolverr` 和 `grok2api` 已经内置在本仓库的 `docker compose` 里
+- `warp-proxy`、`privoxy`、`flaresolverr` 和 `grok2api` 已经内置在本仓库的 `docker compose` 里
 - 你第一次部署时主要还需要自己准备临时邮箱 API
 - 临时邮箱接口长什么样，直接看 [temp-mail-api.md](temp-mail-api.md)
 
@@ -45,7 +45,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xvfb chromium-browser
 - 如果你的系统没有 `chromium-browser` 包，就改装 `google-chrome-stable`
 - 这 3 个依赖少一个，宿主机模式都可能报浏览器连接失败
 
-## 3. Docker 一键启动控制台
+## 3. Docker 一键启动注册闭环
 
 如果你不想先在宿主机手工装一堆依赖，可以直接用 Docker：
 
@@ -58,26 +58,27 @@ docker compose -f docker-compose.register.yml up -d --build
 
 默认端口：
 
-- `18600`
 - `8000`
 
 启动后打开：
 
-- `http://<你的服务器IP>:18600`
+- `http://<你的服务器IP>:8000/admin/register`
 - `http://<你的服务器IP>:8000/admin`
 
 说明：
 
-- 这个 Compose 会把控制台、浏览器和 Python 运行环境一起起起来
-- 它也会把 `warp / privoxy / flaresolverr / grok2api` 一起起起来
+- 这个 Compose 会把内置注册控制台、浏览器和 Python 运行环境一起起起来
+- 它也会把 `warp-proxy / privoxy / flaresolverr / grok2api` 一起起起来
 - 内置的 `grok2api` 已是 `jiujiu532/grok2api` 防封版
-- 所以首次部署时，你主要需要在控制台里补全临时邮箱相关参数
+- 所以首次部署时，你主要需要在 `/admin/register` 里补全临时邮箱相关参数
 
 ## 4. 准备运行配置
 
 ```bash
 cp config.example.json config.json
 ```
+
+`config.json` 是本地运行配置，可能包含邮箱密码、Token Sink Key 和代理凭据。它已经被 Git 忽略，不要提交。如果真实密码或 token 曾经被提交、粘贴到日志或分享给他人，请立即轮换。
 
 把下面这些替换成你自己的值：
 
@@ -112,7 +113,7 @@ cp config.example.json config.json
 - `api.endpoint`
 - `api.token`
 
-通常不需要手工再改，因为控制台会默认指向内置的 `warp` 和 `grok2api` 防封版后台接口。
+通常不需要手工再改，因为 `/admin/register` 会默认指向内置的 `warp-proxy` 和 `grok2api` 防封版后台接口。
 
 ## 5. 先做一次命令行验证
 
@@ -136,24 +137,7 @@ python DrissionPage_example.py --count 1
 
 只要这一步能成功产出 `sso/*.txt`，说明注册执行链路已经基本通了。
 
-## 6. 宿主机方式启动控制台
-
-```bash
-cd /home/codex/grok2api_register
-./deploy/start-console.sh
-```
-
-默认监听：
-
-- `0.0.0.0:18600`
-
-如果只想本机访问：
-
-```bash
-GROK_REGISTER_CONSOLE_HOST=127.0.0.1 ./deploy/start-console.sh
-```
-
-## 7. 在控制台里开始跑业务
+## 6. 在控制台里开始跑业务
 
 推荐做法：
 
@@ -162,9 +146,9 @@ GROK_REGISTER_CONSOLE_HOST=127.0.0.1 ./deploy/start-console.sh
 3. 确认日志、邮箱、token 入池都正常
 4. 再创建真正的批量任务，例如 `count=50`
 
-## 8. 成功后你会看到什么
+## 7. 成功后你会看到什么
 
-- 任务目录：`apps/console/runtime/tasks/task_<id>/`
-- 控制台日志：`apps/console/runtime/tasks/task_<id>/console.log`
-- 本地 token 文件：`apps/console/runtime/tasks/task_<id>/sso/task_<id>.txt`
-- 主脚本日志：`apps/console/runtime/tasks/task_<id>/logs/`
+- 任务目录：`${DATA_DIR}/register/tasks/task_<id>/`
+- 控制台日志：`${DATA_DIR}/register/tasks/task_<id>/console.log`
+- 本地 token 文件：`${DATA_DIR}/register/tasks/task_<id>/sso/task_<id>.txt`
+- 主脚本日志：`${DATA_DIR}/register/tasks/task_<id>/logs/`

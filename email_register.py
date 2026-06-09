@@ -86,6 +86,7 @@ _temp_email_cache: Dict[str, str] = {}
 _CLOUD_MAIL_TOKEN_PREFIX = "cloudmail:"
 _cloud_mail_admin_token = ""
 _cloud_mail_message_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
+_ahem_domains_cache: Dict[str, List[str]] = {}
 
 
 def get_email_and_token() -> Tuple[Optional[str], Optional[str]]:
@@ -125,6 +126,8 @@ def _detect_mail_provider(api_base: str) -> str:
         return "duckmail"
     if provider in {"cloudmail", "cloud_mail", "skymail"}:
         return "cloudmail"
+    if provider == "ahem":
+        return "ahem"
     if provider in {"temp_mail", "generic"}:
         return "generic"
 
@@ -142,6 +145,8 @@ def _provider_label() -> str:
         return "DuckMail"
     if provider == "cloudmail":
         return "Cloud Mail"
+    if provider == "ahem":
+        return "AHEM"
     return "Temp Mail"
 
 def _create_session():
@@ -367,6 +372,50 @@ def _create_cloudmail_email() -> Tuple[str, str, str]:
     raise Exception(f"创建 Cloud Mail 邮箱失败，重试后仍冲突: {last_error}")
 
 
+def _get_ahem_domains(session, use_cffi, api_base: str) -> List[str]:
+    global _ahem_domains_cache
+    cache_key = api_base.rstrip("/")
+    if cache_key in _ahem_domains_cache:
+        return _ahem_domains_cache[cache_key]
+
+    res = _do_request(
+        session,
+        use_cffi,
+        "get",
+        f"{cache_key}/properties",
+        headers=_build_headers(),
+        timeout=20,
+    )
+    if res.status_code != 200:
+        raise Exception(f"获取 AHEM 域名失败: {res.status_code} - {res.text[:200]}")
+
+    data = res.json()
+    if not isinstance(data, dict):
+        raise Exception("AHEM properties 接口返回格式异常")
+
+    domains = data.get("allowedDomains") or []
+    if not isinstance(domains, list):
+        raise Exception("AHEM allowedDomains 返回格式异常")
+
+    cleaned_domains = [str(domain).strip() for domain in domains if str(domain).strip()]
+    if not cleaned_domains:
+        raise Exception("AHEM 域名列表为空，无法创建邮箱")
+    _ahem_domains_cache[cache_key] = cleaned_domains
+    return cleaned_domains
+
+
+def _create_ahem_email() -> Tuple[str, str, str]:
+    if not TEMP_MAIL_API_BASE:
+        raise Exception("temp_mail_api_base 未设置，无法创建 AHEM 邮箱")
+
+    session, use_cffi = _create_session()
+    domains = _get_ahem_domains(session, use_cffi, TEMP_MAIL_API_BASE)
+    email_local = _generate_local_part(random.randint(8, 12))
+    email = f"{email_local}@{random.choice(domains)}"
+    print(f"[*] AHEM 临时邮箱创建成功: {email}")
+    return email, "", email_local
+
+
 def _build_duckmail_headers(token: str = "") -> Dict[str, str]:
     headers: Dict[str, str] = {}
     if token:
@@ -509,6 +558,11 @@ def create_temp_email() -> Tuple[str, str, str]:
             return _create_cloudmail_email()
         except Exception as e:
             raise Exception(f"Cloud Mail 临时邮箱创建失败: {e}")
+    if provider == "ahem":
+        try:
+            return _create_ahem_email()
+        except Exception as e:
+            raise Exception(f"AHEM 临时邮箱创建失败: {e}")
 
     if not TEMP_MAIL_ADMIN_PASSWORD:
         raise Exception("temp_mail_admin_password 未设置，无法创建临时邮箱")
@@ -638,6 +692,44 @@ def _fetch_cloudmail_emails(mail_token: str) -> List[Dict[str, Any]]:
     return []
 
 
+def _normalize_ahem_message(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    msg_id = item.get("emailId") or item.get("id")
+    if msg_id is None:
+        return None
+    normalized = dict(item)
+    normalized["id"] = str(msg_id)
+    return normalized
+
+
+def _fetch_ahem_emails(mail_token: str) -> List[Dict[str, Any]]:
+    api_base = TEMP_MAIL_API_BASE.rstrip("/")
+    session, use_cffi = _create_session()
+    res = _do_request(
+        session,
+        use_cffi,
+        "get",
+        f"{api_base}/mailbox/{mail_token}/email",
+        headers=_build_headers(),
+        timeout=20,
+    )
+    if res.status_code == 404:
+        return []
+    if res.status_code != 200:
+        return []
+    data = res.json()
+    if not isinstance(data, list):
+        return []
+
+    messages: List[Dict[str, Any]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        normalized = _normalize_ahem_message(item)
+        if normalized:
+            messages.append(normalized)
+    return messages
+
+
 def fetch_emails(mail_token: str) -> List[Dict[str, Any]]:
     """获取邮件列表。"""
     provider = _detect_mail_provider(TEMP_MAIL_API_BASE)
@@ -649,6 +741,11 @@ def fetch_emails(mail_token: str) -> List[Dict[str, Any]]:
     if provider == "cloudmail":
         try:
             return _fetch_cloudmail_emails(mail_token)
+        except Exception:
+            return []
+    if provider == "ahem":
+        try:
+            return _fetch_ahem_emails(mail_token)
         except Exception:
             return []
 
@@ -732,6 +829,26 @@ def _fetch_cloudmail_email_detail(mail_token: str, msg_id: str) -> Optional[Dict
     return None
 
 
+def _fetch_ahem_email_detail(mail_token: str, msg_id: str) -> Optional[Dict[str, Any]]:
+    api_base = TEMP_MAIL_API_BASE.rstrip("/")
+    normalized_id = _normalize_message_id(msg_id)
+    session, use_cffi = _create_session()
+    res = _do_request(
+        session,
+        use_cffi,
+        "get",
+        f"{api_base}/mailbox/{mail_token}/email/{normalized_id}",
+        headers=_build_headers(),
+        timeout=20,
+    )
+    if res.status_code != 200:
+        return None
+    data = res.json()
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
 def fetch_email_detail(mail_token: str, msg_id: str) -> Optional[Dict[str, Any]]:
     """获取单封邮件详情。"""
     provider = _detect_mail_provider(TEMP_MAIL_API_BASE)
@@ -743,6 +860,11 @@ def fetch_email_detail(mail_token: str, msg_id: str) -> Optional[Dict[str, Any]]
     if provider == "cloudmail":
         try:
             return _fetch_cloudmail_email_detail(mail_token, msg_id)
+        except Exception:
+            return None
+    if provider == "ahem":
+        try:
+            return _fetch_ahem_email_detail(mail_token, msg_id)
         except Exception:
             return None
 
@@ -808,15 +930,18 @@ def _stringify_mail_part(value: Any) -> str:
 
 def _extract_mail_content(detail: Dict[str, Any]) -> str:
     """兼容 text/html/raw MIME 三种内容来源。"""
+    text_as_html = detail.get("textAsHtml")
     direct_parts = [
         detail.get("subject"),
         detail.get("text"),
         detail.get("html"),
+        text_as_html,
+        _html_to_text(text_as_html) if isinstance(text_as_html, str) and text_as_html else "",
         detail.get("raw"),
         detail.get("source"),
     ]
     direct_content = "\n".join(_stringify_mail_part(part) for part in direct_parts if part)
-    if detail.get("text") or detail.get("html"):
+    if detail.get("text") or detail.get("html") or detail.get("textAsHtml"):
         return direct_content
 
     raw = detail.get("raw") or detail.get("source")

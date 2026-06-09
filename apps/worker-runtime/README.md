@@ -10,6 +10,5 @@
 - `Chrome/Chromium`
 - Python 3.10+
 - 根目录 [requirements.txt](../../requirements.txt) 依赖
-- 控制台则额外需要 [apps/console/requirements.txt](../console/requirements.txt)
 
 示例容器定义见 [Dockerfile](Dockerfile)。

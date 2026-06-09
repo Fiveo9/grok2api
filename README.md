@@ -68,11 +68,10 @@ docker compose -f docker-compose.register.yml up -d --build
 - `privoxy`
 - `flaresolverr`
 - `grok2api`
-- `console`
 
 ### 4. 首次访问
 
-- `http://<你的服务器IP>:18600`：注册控制台
+- `http://<你的服务器IP>:8000/admin/register`：注册控制台
 - `http://<你的服务器IP>:8000/admin`：`grok2api` 防封版后台
 
 注册控制台默认会把成功拿到的 `sso` 推送到：
@@ -83,7 +82,7 @@ docker compose -f docker-compose.register.yml up -d --build
 
 1. 先登录 `http://<你的服务器IP>:8000/admin`
 2. 确认后台口令可用
-3. 打开 `http://<你的服务器IP>:18600`
+3. 打开 `http://<你的服务器IP>:8000/admin/register`
 4. 先跑一次健康检查
 5. 先创建一个 `count=1` 的任务验证
 6. 确认邮箱、验证码、注册成功、`sso` 落地和 token 入池都正常
@@ -93,7 +92,9 @@ docker compose -f docker-compose.register.yml up -d --build
 
 - `DrissionPage_example.py`
 - `email_register.py`
-- `apps/console`
+- `app/products/web/admin/register.py`
+- `app/statics/admin/register.html`
+- `app/statics/js/admin-register.js`
 - `apps/worker-runtime`
 - `turnstilePatch`
 - `docs/quickstart.md`
@@ -191,7 +192,7 @@ docker compose -f docker-compose.warp.yml up -d
 
 启动后代理配置已自动完成，进入 Admin 后台添加账号即可使用。
 
-### 方式三：注册闭环版（控制台 + 注册执行器）
+### 方式三：注册闭环版（内置控制台 + 注册执行器）
 
 ```bash
 git clone https://github.com/rrkistch/grok2api_register.git
@@ -200,7 +201,7 @@ cp .env.example .env
 docker compose -f docker-compose.register.yml up -d --build
 ```
 
-> 这套 Compose 会同时启动注册控制台、浏览器运行时和防封版 `grok2api`，适合需要批量注册并自动入池的场景。
+> 这套 Compose 会在 `grok2api` 内置 `/admin/register` 注册控制台，并包含浏览器运行时和防封链路，适合需要批量注册并自动入池的场景。
 
 ### 方式四：Docker 单容器
 

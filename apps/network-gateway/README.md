@@ -16,8 +16,8 @@
 - `browser_proxy`：浏览器访问 `x.ai` 时走的出口
 - `proxy`：邮箱 API 等普通请求走的出口
 
-在当前一体化部署里，根目录 [docker-compose.register.yml](../../docker-compose.register.yml) 已经内置了 `warp` 服务，默认地址是：
+在当前一体化部署里，根目录 [docker-compose.register.yml](../../docker-compose.register.yml) 已经内置了 `warp-proxy` 服务，默认地址是：
 
-- `socks5://warp:1080`
+- `socks5://warp-proxy:1080`
 
 所以在整套 Compose 里，控制台和注册任务默认就能直接使用这个出口，不需要你再单独部署另一个 WARP 项目。
