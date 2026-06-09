@@ -1,14 +1,38 @@
+<div align="center">
+
 <img alt="Grok2API" src="https://github.com/user-attachments/assets/037a0a6e-7986-41cc-b4af-04df612ee886" />
 
-[![Python](https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.119%2B-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![License](https://img.shields.io/badge/license-MIT-16a34a)](LICENSE)
-[![Docker](https://img.shields.io/badge/ghcr.io-jiujiu532%2Fgrok2api-2496ED?logo=docker&logoColor=white)](https://github.com/jiujiu532/grok2api/pkgs/container/grok2api)
+<h1>Grok Web 能力的 OpenAI 兼容网关</h1>
+
+<h3>多账号池、智能选号、自动维护</h3>
+
+<p>
+将 grok.com 与 console.x.ai 的聊天、图像、视频能力，<br>
+以 <strong>OpenAI / Anthropic 兼容 API</strong> 统一对外提供。
+</p>
+
+<p>
+<a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/python-3.13%2B-3776AB?logo=python&logoColor=white"></a>
+<a href="https://fastapi.tiangolo.com/"><img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.119%2B-009688?logo=fastapi&logoColor=white"></a>
+<a href="https://github.com/jiujiu532/grok2api/pkgs/container/grok2api"><img alt="Docker" src="https://img.shields.io/badge/ghcr.io-jiujiu532%2Fgrok2api-2496ED?logo=docker&logoColor=white"></a>
+<a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-16a34a"></a>
+</p>
+
+<p>
+<a href="#核心特性">核心特性</a> ·
+<a href="#部署指南">部署指南</a> ·
+<a href="#模型列表">模型列表</a> ·
+<a href="#账号配置">账号配置</a> ·
+<a href="#api-端点">API 端点</a> ·
+<a href="#常见问题">常见问题</a>
+</p>
+
+</div>
 
 > [!NOTE]
-> 本项目仅供学习与研究交流。请务必遵守 Grok 的使用条款及当地法律法规，不得用于非法用途。二开与 PR 请保留原作者与前端标识。
+> 本项目仅供学习与研究交流。请务必遵守 Grok 的使用条款及当地法律法规，不得用于非法用途。
 
-<br>
+本仓库基于上游 [chenyme/grok2api](https://github.com/chenyme/grok2api) 二次开发，新增多账号池管理、Console 免费模型、配额轮换、防封部署等能力。欢迎 PR 和 Fork，二开请保留原作者与前端标识。
 
 ## 仓库模式
 
@@ -99,62 +123,40 @@ docker compose -f docker-compose.register.yml up -d --build
 - `turnstilePatch`
 - `docs/quickstart.md`
 
-<br>
+---
 
-Grok2API 是一个基于 **FastAPI** 构建的 Grok 网关，将 Grok Web 能力以 OpenAI 兼容 API 的方式对外提供。核心特性：
+## 核心特性
 
-- OpenAI 兼容接口：`/v1/models`、`/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`、`/v1/videos/{video_id}`、`/v1/videos/{video_id}/content`
-- Anthropic 兼容接口：`/v1/messages`
-- 支持流式与非流式对话、显式思考输出、函数工具结构透传，统一的 token / usage 统计
-- 支持多账号池、层级选号、失败反馈、额度同步与自动维护
-- 支持本地缓存图片、视频与本地代理链接返回
-- 支持文生图、图像编辑、文生视频、图生视频
-- 内置 Admin 后台管理、Web Chat、Masonry 生图、ChatKit 语音页面
-- 支持 `console.x.ai` 免费账号，新增 `*-console` 模型系列
-- 已修复 `grok.com` 路由常见 403 问题，内置 `x-statsig-id` 兼容修复，普通场景下无需额外浏览器签名服务
-
-<br>
-
-## 镜像说明
-
-本仓库基于上游 [chenyme/grok2api](https://github.com/chenyme/grok2api) 二次构建，提供预编译的 Docker 镜像：
-
-### grok2api 主镜像
-
-| 项 | 值 |
+| 能力 | 说明 |
 | :-- | :-- |
-| 镜像地址 | `ghcr.io/jiujiu532/grok2api:latest` |
-| 架构 | `linux/amd64`, `linux/arm64` |
-| 基础镜像 | `python:3.13-alpine` |
-| 默认端口 | `8000` |
-| 默认数据目录 | `/app/data` |
-| 默认日志目录 | `/app/logs` |
+| OpenAI 兼容 | `/v1/chat/completions`、`/v1/responses`、`/v1/images/generations`、`/v1/videos` |
+| Anthropic 兼容 | `/v1/messages`（Claude SDK 直接对接） |
+| 多账号池 | basic / super / heavy 三级池，自动负载均衡与配额同步 |
+| 免费账号 | 支持 `console.x.ai` SSO Token，`*-console` 模型零成本使用 |
+| 媒体生成 | 文生图、图像编辑、文生视频、图生视频，本地缓存与代理链接 |
+| 防封内置 | `x-statsig-id` 兼容修复，WARP + FlareSolverr 一键部署 |
+| 管理后台 | Admin 配置、账号管理、Web Chat、Masonry 画廊、ChatKit 语音 |
 
-### privoxy-warp 镜像（防封版专用）
+---
 
-| 项 | 值 |
-| :-- | :-- |
-| 镜像地址 | `ghcr.io/jiujiu532/privoxy-warp:latest` |
-| 架构 | `linux/amd64`, `linux/arm64` |
-| 说明 | 预配置好 WARP SOCKS5 转发规则的 Privoxy，与 `caomingjun/warp` 配合使用 |
-
-<br>
-
-## 快速开始
+## 部署指南
 
 本项目提供三种部署方式，按需选择：
 
 | 方式 | 说明 | 适用场景 |
 | :-- | :-- | :-- |
-| **标准版** | 仅 grok2api，直连 Grok | IP 干净、无 Cloudflare 拦截问题 |
+| **标准版** | 仅 grok2api，直连 Grok | IP 干净、无 Cloudflare 拦截 |
 | **防封版** | grok2api + WARP + Privoxy + FlareSolverr | IP 被 Cloudflare 拦截、需要稳定访问 |
 | **注册闭环版** | register stack + grok2api + WARP + Privoxy + FlareSolverr | 需要批量注册、控制台和自动入池 |
 
 > [!TIP]
-> 当前版本已内置针对 `grok.com` 常见 403 问题的兼容修复，标准版可直接部署验证，无需额外浏览器签名服务。
-> 如果仍然出现 403，通常与出口 IP 被 Cloudflare 风控、`cf_clearance` 失效或代理环境有关，此时建议切换到防封版部署。
+> 当前版本已内置 403 兼容修复，标准版可直接验证。仍遇 403 时再切防封版。
 
-### 方式一：标准版（Docker Compose）
+---
+
+### 标准版部署
+
+**Docker Compose（推荐）：**
 
 ```bash
 git clone https://github.com/rrkistch/grok2api_register.git
@@ -169,45 +171,10 @@ docker compose up -d
 docker compose logs -f grok2api
 ```
 
-> 使用 `docker-compose.yml`，仅启动 grok2api 容器，代理配置默认为空（直连）。
-
-### 方式二：防封版（WARP + FlareSolverr 一键部署）
-
-> **前置要求**：服务器需支持 `NET_ADMIN` + `SYS_MODULE` 权限（KVM/XEN 虚拟化均支持，OpenVZ/LXC 不支持）。
+**Docker 单容器：**
 
 ```bash
-git clone https://github.com/rrkistch/grok2api_register.git
-cd grok2api_register
-docker compose -f docker-compose.warp.yml up -d
-```
-
-防封版会自动启动以下服务并完成配置：
-
-| 服务 | 说明 |
-| :-- | :-- |
-| `warp-proxy` | Cloudflare WARP 出口代理，提供干净的 Cloudflare IP |
-| `privoxy` | HTTP 代理，将流量转发到 WARP（已预配置，无需手动操作） |
-| `flaresolverr` | 自动解 Cloudflare 挑战，获取 cf_clearance |
-| `grok2api` | 主服务，代理配置由 init 容器自动写入 |
-
-启动后代理配置已自动完成，进入 Admin 后台添加账号即可使用。
-
-### 方式三：注册闭环版（内置控制台 + 注册执行器）
-
-```bash
-git clone https://github.com/rrkistch/grok2api_register.git
-cd grok2api_register
-cp .env.example .env
-docker compose -f docker-compose.register.yml up -d --build
-```
-
-> 这套 Compose 会在 `grok2api` 内置 `/admin/register` 注册控制台，并包含浏览器运行时和防封链路，适合需要批量注册并自动入池的场景。
-
-### 方式四：Docker 单容器
-
-```bash
-docker run -d \
-  --name grok2api \
+docker run -d --name grok2api \
   -p 8000:8000 \
   -e TZ=Asia/Shanghai \
   -e LOG_LEVEL=INFO \
@@ -233,360 +200,306 @@ docker run -d `
   ghcr.io/jiujiu532/grok2api:latest
 ```
 
-### 方式五：本地源码部署
+---
 
-前置：Python 3.13+、[uv](https://docs.astral.sh/uv/getting-started/installation/)。
+### 防封版部署
+
+> **前置要求**：服务器需支持 `NET_ADMIN` + `SYS_MODULE` 权限（KVM/XEN 虚拟化均支持，OpenVZ/LXC 不支持）。
 
 ```bash
 git clone https://github.com/jiujiu532/grok2api
 cd grok2api/grok2api-main/grok2api-main
-cp .env.example .env
-uv sync
-uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 app.main:app
+docker compose -f docker-compose.warp.yml up -d
 ```
 
-### 首次启动
+防封版自动启动以下服务：
 
-服务启动后访问 `http://localhost:8000/admin/login`，默认密码为 `grok2api`，进入后依次完成：
+| 服务 | 说明 |
+| :-- | :-- |
+| `warp-proxy` | Cloudflare WARP 出口代理，提供干净 IP |
+| `privoxy` | HTTP 代理，将流量转发到 WARP |
+| `flaresolverr` | 自动解 Cloudflare 挑战，获取 cf_clearance |
+| `init-config` | 初始化容器，自动写入代理配置 |
+| `grok2api` | 主服务 |
 
-1. 修改 `app.app_key`（Admin 后台登录密码）
-2. 设置 `app.api_key`（API 调用鉴权密钥，留空则不鉴权）
-3. 设置 `app.app_url`（公网地址，否则图片、视频链接会 403）
+启动后代理配置已自动完成，进入 Admin 后台添加账号即可使用。
 
-> 运行时配置写入 `${DATA_DIR}/config.toml`，保存后即时生效，无需重启容器。
+---
 
-<br>
+### 注册闭环版部署
 
-## 升级与回滚
+```bash
+git clone https://github.com/rrkistch/grok2api_register.git
+cd grok2api_register
+cp .env.example .env
+docker compose -f docker-compose.register.yml up -d --build
+```
 
-无论标准版还是防封版，升级时只需要更新 `grok2api` 主镜像即可。WARP、Privoxy、FlareSolverr 等防封组件基本不需要更新。
+这套 Compose 会在 `grok2api` 内置 `/admin/register` 注册控制台，并包含浏览器运行时和防封链路，适合需要批量注册并自动入池的场景。
 
-### 标准版升级
+---
+
+<details>
+<summary><strong>升级 / 回滚 / 卸载 / 迁移</strong></summary>
+
+### 升级
+
+无论标准版、防封版还是注册闭环版，升级时只需更新 `grok2api` 主镜像，防封和注册组件通常不需要更新。
+
+**标准版升级：**
 
 ```bash
 docker pull ghcr.io/jiujiu532/grok2api:latest
 docker compose up -d --no-deps grok2api
 ```
 
-### 防封版升级（只更新 grok2api，不动防封组件）
+**防封版升级（只更新主服务，不动 WARP/FlareSolverr）：**
 
 ```bash
 docker pull ghcr.io/jiujiu532/grok2api:latest
 docker compose -f docker-compose.warp.yml up -d --no-deps grok2api
 ```
 
-> `--no-deps` 参数确保只重启 grok2api 容器，WARP、Privoxy、FlareSolverr 不受影响，继续运行。
+> `--no-deps` 确保只重启 grok2api，WARP/Privoxy/FlareSolverr 继续运行不中断。
+>
+> `./data/` 中的配置（`config.toml`）和数据库（`accounts.db`）挂载在 volume 中，升级不会覆盖。
 
-> `./data/` 目录中的配置文件（`config.toml`）和账号数据库（`accounts.db`）挂载在 volume 中，升级不会覆盖。
-
-### 回滚到指定版本
+### 回滚
 
 ```bash
 # 查看可用版本：https://github.com/jiujiu532/grok2api/pkgs/container/grok2api
 docker pull ghcr.io/jiujiu532/grok2api:<tag>
+
+# 标准版回滚
 docker compose up -d --no-deps grok2api
-# 或防封版：
+
+# 防封版回滚
 docker compose -f docker-compose.warp.yml up -d --no-deps grok2api
+```
+
+### 卸载
+
+**标准版卸载：**
+
+```bash
+cd grok2api/grok2api-main/grok2api-main
+docker compose down
+# 如需删除数据（不可恢复）：
+rm -rf ./data ./logs
+```
+
+**防封版卸载：**
+
+```bash
+cd grok2api/grok2api-main/grok2api-main
+docker compose -f docker-compose.warp.yml down
+# 如需删除数据（不可恢复）：
+rm -rf ./data ./logs
 ```
 
 ### 从标准版迁移到防封版
 
-已有标准版部署的用户，迁移到防封版无需重新配置，数据完全保留：
+数据完全保留，无需重新配置：
 
 ```bash
-# 1. 停止并删除当前 grok2api 容器（数据不受影响）
-docker stop grok2api && docker rm grok2api
+# 停止标准版
+docker compose down
 
-# 2. 进入项目目录（与标准版相同目录）
-cd grok2api/grok2api-main/grok2api-main
-
-# 3. 用防封版 compose 启动（会自动启动 WARP、Privoxy、FlareSolverr）
+# 用防封版启动（自动检测已有配置，不覆盖）
 docker compose -f docker-compose.warp.yml up -d
 ```
 
-> 防封版的 `init-config` 容器会检测 `data/config.toml` 是否已有代理配置：
-> - 若已有配置（如之前手动配过代理）：跳过，不覆盖
-> - 若无代理配置：自动写入 WARP + FlareSolverr 配置
+</details>
 
-迁移完成后，进入 Admin 后台确认代理配置已生效即可。
+---
 
-<br>
+### 本地源码部署
 
-## 反向代理示例（Nginx）
+前置：Python 3.13+、[uv](https://docs.astral.sh/uv/getting-started/installation/)
 
-```nginx
-server {
-    listen 443 ssl http2;
-    server_name your.domain.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # 流式响应必备
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 600s;
-        proxy_send_timeout 600s;
-    }
-}
+```bash
+git clone https://github.com/jiujiu532/grok2api
+cd grok2api/grok2api-main/grok2api-main
+cp .env.example .env && uv sync
+uv run granian --interface asgi --host 0.0.0.0 --port 8000 --workers 1 app.main:app
 ```
 
-完成反代后，记得在 Admin 后台把 `app.app_url` 改为 `https://your.domain.com`。
+---
 
-<br>
+### 首次启动
 
-## WebUI
+访问 `http://localhost:8000/admin/login`，默认密码 `grok2api`，进入后设置：
 
-| 页面 | 路径 |
-| :-- | :-- |
-| Admin 登录页 | `/admin/login` |
-| 账号管理 | `/admin/account` |
-| 配置管理 | `/admin/config` |
-| 缓存管理 | `/admin/cache` |
-| WebUI 登录页 | `/webui/login` |
-| Web Chat | `/webui/chat` |
-| Masonry | `/webui/masonry` |
-| ChatKit | `/webui/chatkit` |
+1. `app.app_key` — Admin 密码
+2. `app.api_key` — API 鉴权密钥（留空不鉴权）
+3. `app.app_url` — 公网地址（图片/视频链接需要）
 
-### 鉴权规则
+> 配置保存即时生效，无需重启。
 
-| 范围 | 配置项 | 规则 |
+---
+
+## 模型列表
+
+### Chat（grok.com）
+
+basic 表示 free 账号，super 和 heavy 为付费账号。
+
+| 模型名 | mode | 账号等级 | 备注 |
+| :-- | :-- | :-- | :-- |
+| `grok-4.20-fast` / `grok-4.3-fast` | fast | basic（优先高等级） |
+| `grok-4.20-auto` | auto | super |
+| `grok-4.20-expert` | expert | super |
+| `grok-4.20-heavy` | heavy | heavy | |
+| `grok-4.3-beta` | grok-420-computer-use-sa | super |
+| `grok-4.20-multi-agent-0309` | heavy | heavy |
+| `grok-4.20-0309-non-reasoning` | fast | basic |
+| `grok-4.20-0309` | auto | super |
+| `grok-4.20-0309-reasoning` | expert | super |
+| `grok-4.20-0309-non-reasoning-super` | fast | super |
+| `grok-4.20-0309-super` | auto | super |
+| `grok-4.20-0309-reasoning-super` | expert | super |
+| `grok-4.20-0309-non-reasoning-heavy` | fast | heavy |
+| `grok-4.20-0309-heavy` | auto | heavy |
+| `grok-4.20-0309-reasoning-heavy` | expert | heavy |
+
+### Chat（console.x.ai）
+
+通过 SSO Token 免费访问，不消耗付费额度。所有免费模型使用 **basic** 等级账号。
+
+| 模型名 | reasoning effort | 账号等级 |
 | :-- | :-- | :-- |
-| `/v1/*` | `app.api_key` | 为空则不额外鉴权 |
-| `/admin/*` | `app.app_key` | 默认值 `grok2api` |
-| `/webui/*` | `app.webui_enabled`, `app.webui_key` | 默认关闭；`webui_key` 为空则不额外校验 |
+| `grok-4.3-console` | 用户传入（默认 medium） | basic |
+| `grok-4.3-low` | low（固定） | basic |
+| `grok-4.3-medium` | medium（固定） | basic |
+| `grok-4.3-high` | high（固定） | basic |
+| `grok-4.20-0309-console` | 默认 | basic |
+| `grok-4.20-0309-reasoning-console` | 固定 reasoning | basic |
+| `grok-4.20-0309-non-reasoning-console` | 无 reasoning | basic |
+| `grok-4.20-multi-agent-console` | 用户传入（默认 medium） | basic|
+| `grok-4.20-multi-agent-low` | low（固定）→ 4 agents | basic|
+| `grok-4.20-multi-agent-medium` | medium（固定）→ 4 agents | basic|
+| `grok-4.20-multi-agent-high` | high（固定）→ 16 agents | basic |
+| `grok-4.20-multi-agent-xhigh` | xhigh（固定）→ 16 agents | basic|
+| `grok-build-console` | 默认 | basic |
 
-<br>
+**Console 配额**：30 次 / 15 分钟窗口，采用延迟恢复轮换策略（消耗至剩余 15 次时启动计时器，评分机制自动轮换到其他账号）。后台每 30 秒巡检并自动重置过期配额。
 
-## 账号管理
+### Image / Video（grok.com）
 
-### 账号类型
-
-| 类型 | 说明 | 适用模型 |
+| 模型名 | 能力 | 账号等级 |
 | :-- | :-- | :-- |
-| **付费账号** | x.ai 官方付费账号 | 所有 `grok-4.20-*`、`grok-4.3-beta` |
-| **免费账号** | 通过 `console.x.ai` 访问的免费账号 | 所有 `*-console` 模型 |
+| `grok-imagine-image-lite` | 文生图 | basic |
+| `grok-imagine-image` / `image-pro` | 文生图 | super |
+| `grok-imagine-image-edit` | 图像编辑 | super |
+| `grok-imagine-video` | 文生视频 | super |
 
-### 免费账号配置
+---
 
-使用免费账号需要提供 SSO Token 与 CF Clearance：
 
-1. 浏览器打开开发者工具（F12）
+
+## 账号配置
+
+| 类型 | 等级 | 适用模型 |
+| :-- | :-- | :-- |
+| 付费账号（x.ai 官方） | super / heavy | `grok-4.20-*`、`grok-4.3-beta`、`grok-4.3-fast` |
+| 免费账号（console.x.ai SSO） | basic | 所有 `*-console` / `*-low` / `*-medium` / `*-high` / `*-xhigh` |
+
+**免费账号获取方式**：
+
+1. 浏览器 F12 打开开发者工具
 2. 访问 `https://console.x.ai/`
-3. 在 Network 中找到任意请求，查看 Cookie：
-   - 复制 `sso` 值
-   - 复制 `cf_clearance` 值
-4. 在 Admin 后台 → 账号管理 → 添加账号，将上述值填入对应字段
+3. Network 面板找任意请求，Cookie 中复制 `sso` 值
+4. Admin 后台 → 账号管理 → 添加账号，粘贴 token
 
-> SSO Token 与 CF Clearance 属于敏感凭证，请勿写入代码或提交到版本库。
+> SSO Token 属于敏感凭证，请勿写入代码或提交到版本库。
 
-<br>
+---
+
+## API 端点
+
+| 端点 | 说明 |
+| :-- | :-- |
+| `GET /v1/models` | 列出可用模型 |
+| `POST /v1/chat/completions` | 聊天 / 图像 / 视频统一入口 |
+| `POST /v1/responses` | OpenAI Responses API |
+| `POST /v1/messages` | Anthropic Messages API |
+| `POST /v1/images/generations` | 图像生成 |
+| `POST /v1/images/edits` | 图像编辑 |
+| `POST /v1/videos` | 异步视频任务 |
+| `GET /v1/videos/{id}` / `{id}/content` | 查询 / 下载视频 |
+
+---
 
 ## 环境变量
-
-启动期变量（`.env` / Compose / `docker run -e`）：
 
 | 变量名 | 说明 | 默认值 |
 | :-- | :-- | :-- |
 | `TZ` | 时区 | `Asia/Shanghai` |
 | `LOG_LEVEL` | 日志级别 | `INFO` |
 | `LOG_FILE_ENABLED` | 写入本地文件日志 | `true` |
-| `ACCOUNT_SYNC_INTERVAL` | 账号目录增量同步间隔（秒） | `30` |
-| `ACCOUNT_SYNC_ACTIVE_INTERVAL` | 检测到变化后的活跃同步间隔（秒） | `3` |
 | `SERVER_HOST` | 监听地址 | `0.0.0.0` |
 | `SERVER_PORT` | 监听端口 | `8000` |
 | `SERVER_WORKERS` | Granian worker 数量 | `1` |
 | `HOST_PORT` | Compose 宿主机映射端口 | `8000` |
 | `DATA_DIR` | 本地数据根目录 | `./data` |
 | `LOG_DIR` | 本地日志目录 | `./logs` |
-| `ACCOUNT_STORAGE` | 账号存储后端：`local` / `redis` / `mysql` / `postgresql` | `local` |
-| `ACCOUNT_LOCAL_PATH` | `local` 模式 SQLite 路径 | `${DATA_DIR}/accounts.db` |
-| `ACCOUNT_REDIS_URL` | `redis` 模式 DSN | `""` |
-| `ACCOUNT_MYSQL_URL` | `mysql` 模式 DSN | `""` |
-| `ACCOUNT_POSTGRESQL_URL` | `postgresql` 模式 DSN | `""` |
-| `ACCOUNT_SQL_POOL_SIZE` | SQL 连接池核心连接数 | `5` |
-| `ACCOUNT_SQL_MAX_OVERFLOW` | SQL 连接池最大溢出 | `10` |
+| `ACCOUNT_STORAGE` | 存储后端：`local` / `redis` / `mysql` / `postgresql` | `local` |
+| `ACCOUNT_SYNC_INTERVAL` | 增量同步间隔（秒） | `30` |
+| `ACCOUNT_SYNC_ACTIVE_INTERVAL` | 活跃同步间隔（秒） | `3` |
+| `ACCOUNT_LOCAL_PATH` | SQLite 路径 | `${DATA_DIR}/accounts.db` |
+| `ACCOUNT_REDIS_URL` | Redis DSN | `""` |
+| `ACCOUNT_MYSQL_URL` | MySQL DSN | `""` |
+| `ACCOUNT_POSTGRESQL_URL` | PostgreSQL DSN | `""` |
+| `ACCOUNT_SQL_POOL_SIZE` | 连接池核心连接数 | `5` |
+| `ACCOUNT_SQL_MAX_OVERFLOW` | 连接池最大溢出 | `10` |
 | `ACCOUNT_SQL_POOL_TIMEOUT` | 等待空闲连接超时（秒） | `30` |
 | `ACCOUNT_SQL_POOL_RECYCLE` | 连接最大复用时间（秒） | `1800` |
-| `CONFIG_LOCAL_PATH` | 运行时配置文件路径 | `${DATA_DIR}/config.toml` |
 
-运行时配置也支持 `GROK_` 前缀环境变量覆盖，例如 `GROK_APP_API_KEY` 覆盖 `app.api_key`，`GROK_FEATURES_STREAM` 覆盖 `features.stream`。
+运行时配置支持 `GROK_` 前缀覆盖，如 `GROK_APP_API_KEY` 覆盖 `app.api_key`。
 
-<br>
-
-## 模型支持
-
-> 通过 `GET /v1/models` 获取当前启用的模型列表。
-
-### Chat（付费账号）
-
-| 模型名 | mode | tier |
-| :-- | :-- | :-- |
-| `grok-4.20-0309-non-reasoning` | `fast` | `basic` |
-| `grok-4.20-0309` | `auto` | `super` |
-| `grok-4.20-0309-reasoning` | `expert` | `super` |
-| `grok-4.20-0309-non-reasoning-super` | `fast` | `super` |
-| `grok-4.20-0309-super` | `auto` | `super` |
-| `grok-4.20-0309-reasoning-super` | `expert` | `super` |
-| `grok-4.20-0309-non-reasoning-heavy` | `fast` | `heavy` |
-| `grok-4.20-0309-heavy` | `auto` | `heavy` |
-| `grok-4.20-0309-reasoning-heavy` | `expert` | `heavy` |
-| `grok-4.20-multi-agent-0309` | `heavy` | `heavy` |
-| `grok-4.20-fast` | `fast` | `basic`，优先使用高等级账号池 |
-| `grok-4.20-auto` | `auto` | `super`，优先使用高等级账号池 |
-| `grok-4.20-expert` | `expert` | `super`，优先使用高等级账号池 |
-| `grok-4.20-heavy` | `heavy` | `heavy` |
-| `grok-4.3-beta` | `grok-420-computer-use-sa` | `super` |
-
-### Chat（console.x.ai 免费账号）
-
-通过 `console.x.ai` 路由，使用 SSO Token 免费访问，不消耗付费账号额度。
-
-| 模型名 | reasoning effort | 说明 |
-| :-- | :-- | :-- |
-| `grok-4.3-console` | 用户传入（默认 medium） | 免费账号 |
-| `grok-4.3-low` | low（固定） | 免费账号 |
-| `grok-4.3-medium` | medium（固定） | 免费账号 |
-| `grok-4.3-high` | high（固定） | 免费账号 |
-| `grok-4.20-0309-console` | 默认 | 免费账号 |
-| `grok-4.20-0309-reasoning-console` | 固定 reasoning | 免费账号 |
-| `grok-4.20-0309-non-reasoning-console` | 无 reasoning | 免费账号 |
-| `grok-4.20-multi-agent-console` | 用户传入（默认 medium） | 免费账号，多智能体，agent 数量由 effort 决定 |
-| `grok-4.20-multi-agent-low` | low（固定）→ 4 agents | 免费账号，多智能体 |
-| `grok-4.20-multi-agent-medium` | medium（固定）→ 4 agents | 免费账号，多智能体 |
-| `grok-4.20-multi-agent-high` | high（固定）→ 16 agents | 免费账号，多智能体 |
-| `grok-4.20-multi-agent-xhigh` | xhigh（固定）→ 16 agents | 免费账号，多智能体 |
-| `grok-build-console` | 默认 | 免费账号，Grok Build 0.1 |
-
-> multi-agent 模型：`low`/`medium` 使用 4 个 agent（快速研究），`high`/`xhigh` 使用 16 个 agent（深度研究）。
-
-### Console 模型配额
-
-| 配额类型 | 次数 | 窗口 | 说明 |
-| :-- | :-- | :-- | :-- |
-| C（Console） | 30 次 | 15 分钟 | 所有 `*-console` / `*-low` / `*-medium` / `*-high` / `*-xhigh` 模型共享 |
-
-<sub>以上数值基于简单压测得出（单账号约 40-50 次/5 分钟触发服务端限制），设为 30 次/15 分钟留有余量，避免触发上游真实 429。实际限制可能随 xAI 策略调整而变化。</sub>
-
-### Image / Image Edit / Video
-
-| 模型名 | mode | tier |
-| :-- | :-- | :-- |
-| `grok-imagine-image-lite` | `fast` | `basic` |
-| `grok-imagine-image` | `auto` | `super` |
-| `grok-imagine-image-pro` | `auto` | `super` |
-| `grok-imagine-image-edit` | `auto` | `super` |
-| `grok-imagine-video` | `auto` | `super` |
-
-<br>
-
-## API 一览
-
-| 接口 | 鉴权 | 说明 |
-| :-- | :-- | :-- |
-| `GET /v1/models` | 是 | 列出当前启用模型 |
-| `GET /v1/models/{model_id}` | 是 | 获取单个模型信息 |
-| `POST /v1/chat/completions` | 是 | 对话 / 图像 / 视频统一入口 |
-| `POST /v1/responses` | 是 | OpenAI Responses API 兼容子集 |
-| `POST /v1/messages` | 是 | Anthropic Messages API 兼容接口 |
-| `POST /v1/images/generations` | 是 | 独立图像生成接口 |
-| `POST /v1/images/edits` | 是 | 独立图像编辑接口 |
-| `POST /v1/videos` | 是 | 异步视频任务创建 |
-| `GET /v1/videos/{video_id}` | 是 | 查询视频任务 |
-| `GET /v1/videos/{video_id}/content` | 是 | 获取最终视频文件 |
-| `GET /v1/files/video?id=...` | 否 | 获取本地缓存视频 |
-| `GET /v1/files/image?id=...` | 否 | 获取本地缓存图片 |
-
-<br>
+---
 
 ## 调用示例
 
-### 付费账号对话
-
 ```bash
+# 付费账号对话
 curl http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
-  -d '{
-    "model": "grok-4.20-auto",
-    "stream": true,
-    "reasoning_effort": "high",
-    "messages": [
-      {"role":"user","content":"你好"}
-    ]
-  }'
-```
+  -d '{"model":"grok-4.20-auto","stream":true,"messages":[{"role":"user","content":"你好"}]}'
 
-### 免费账号对话
-
-```bash
+# 免费账号对话
 curl http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
-  -d '{
-    "model": "grok-4.3-high-console",
-    "stream": true,
-    "messages": [
-      {"role":"user","content":"你好"}
-    ]
-  }'
+  -d '{"model":"grok-4.3-console","stream":true,"messages":[{"role":"user","content":"你好"}]}'
 ```
 
-### 图像生成
-
-```bash
-curl http://localhost:8000/v1/images/generations \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
-  -d '{
-    "model": "grok-imagine-image",
-    "prompt": "一只在太空漂浮的猫",
-    "n": 1,
-    "size": "1792x1024",
-    "response_format": "url"
-  }'
-```
-
-### 视频生成
-
-```bash
-curl http://localhost:8000/v1/videos \
-  -H "Authorization: Bearer $GROK2API_API_KEY" \
-  -F "model=grok-imagine-video" \
-  -F "prompt=霓虹雨夜街头，电影感慢镜头追拍" \
-  -F "seconds=10" \
-  -F "size=1792x1024" \
-  -F "resolution_name=720p" \
-  -F "preset=normal"
-```
-
-更完整的字段说明见上游 [接口文档](https://github.com/chenyme/grok2api#api-%E4%B8%80%E8%A7%88)。
-
-<br>
+---
 
 ## 常见问题
 
-**Q: 镜像启动后 `/admin/login` 打不开？**
-确认容器端口映射正确：`docker compose ps` 查看 `0.0.0.0:8000->8000/tcp`，且宿主机防火墙未拦截。
+| 问题 | 解决方案 |
+| :-- | :-- |
+| Admin 打不开 | 确认端口映射和防火墙：`docker compose ps` |
+| 图片/视频链接 403 | 设置 `app.app_url` 为公网地址（含 `https://`） |
+| Cloudflare 拦截 | 更换代理，或者切换防封版部署，再或者手动配置 `proxy.clearance.mode` |
+| 多 Worker 冲突 | 无冲突，调度器通过文件锁选举 leader |
 
-**Q: 图片或视频链接返回 403？**
-没有正确设置 `app.app_url`。该字段必须是用户能访问的公网地址（含协议），例如 `https://api.example.com`。
+---
 
-**Q: 提示 Cloudflare 拦截？**
-在 Admin 后台 → 配置管理 → 代理配置，将 `proxy.clearance.mode` 设为 `manual` 并填入有效 `cf_cookies` + `user_agent`，或部署 FlareSolverr 后切到 `flaresolverr` 模式。
+## 更新日志
 
-**Q: 当前版本是否已经修复 grok.com 403？**
-A: 是。当前版本已内置 `x-statsig-id` 兼容修复，普通场景下无需额外浏览器 sidecar。若仍遇到 403，更多是出口 IP、Cloudflare 风控或 clearance 失效导致，建议优先尝试防封版部署。
+### v0.1.4
 
-**Q: 多 worker 部署？**
-`SERVER_WORKERS` 大于 1 时，账号刷新调度器会通过文件锁选举出唯一 leader，其他 worker 仅做轻量同步，安全可用。Windows 下建议保持单 worker。
+- **新增** `grok-4.3-fast` 模型（与 `grok-4.20-fast` 等价，对齐 grok.com 前端 "Grok 4.3" 命名）
+- **修复** Console 配额在 `random` 策略下不扣减、不恢复的问题
+- **优化** Console 配额轮换策略：剩余 15 次时才启动恢复计时器，利用评分机制实现多账号自然轮换
+- **新增** Console 配额后台自动巡检（每 30 秒），窗口到期后主动重置，无需等待下次请求触发
+- **修复** 升级 `aiohttp` 至 `>=3.14.0`，修复 CVE-2026-34993 和 CVE-2026-47265
+- **合并** PR#8：修复 bootstrap 阶段 SuperGrok/heavy 账号被错误标记为 basic 的逻辑死锁
 
-<br>
+---
 
 ## 致谢
 
@@ -595,14 +508,16 @@ A: 是。当前版本已内置 `x-statsig-id` 兼容修复，普通场景下无�
 - 项目文档：[blog.cheny.me](https://blog.cheny.me/blog/posts/grok2api)
 - 社区：[Linux.do](https://linux.do)
 
-<br>
+---
 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=jiujiu532/grok2api&type=Date)](https://star-history.com/#jiujiu532/grok2api&Date)
 
-<br>
+---
 
-## License
+<div align="center">
 
-MIT
+**MIT License**
+
+</div>
